@@ -4,17 +4,28 @@
   "version": "0.0.0",
   "type": "module",
   "description": "React UI for the central-config local test console (deploy/compose).",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "test": "vitest run"
   },
   "dependencies": {
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.0",
     "@vitejs/plugin-react": "^4.7.0",
-    "vite": "^5.4.21"
+    "eslint": "^9.39.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
   }
 }

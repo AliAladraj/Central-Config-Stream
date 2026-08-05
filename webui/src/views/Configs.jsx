@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../api.js'
-import { Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, useList } from '../ui.jsx'
+import { Banner, Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, useList, useResetOnChange } from '../ui.jsx'
 
 // Appsettings are the highest-consequence rows in the system: one bad tree
 // breaks every instance of that service at once. So the editor validates as you
@@ -14,11 +14,12 @@ export default function Configs({ ctx }) {
   const [selected, setSelected] = useState(null)
   const [creating, setCreating] = useState(false)
 
+  useResetOnChange(envId, () => setOffset(0))
+
   const { rows, loading, error, reload } = useList(
     () => api.listConfigs({ microserviceId: msId, environmentId: envId, limit, offset }),
     [msId, envId, limit, offset],
   )
-  useEffect(() => { setOffset(0) }, [msId, envId])
 
   const remove = async (row) => {
     const ok = await confirm({
@@ -47,7 +48,7 @@ export default function Configs({ ctx }) {
         <div className="toolbar">
           <label className="field">
             <span>microservice</span>
-            <select value={msId} onChange={(e) => setMsId(e.target.value)}>
+            <select value={msId} onChange={(e) => { setMsId(e.target.value); setOffset(0) }}>
               <option value="">All services</option>
               {refs.microservices.map((m) => <option key={m.id} value={m.id}>{m.name} (id {m.id})</option>)}
             </select>
@@ -56,7 +57,7 @@ export default function Configs({ ctx }) {
           <button className="ghost" onClick={reload}>Refresh</button>
         </div>
 
-        {error ? <Empty>Could not load: {error.message}</Empty>
+        {error ? <Banner problem={{ action: 'Load appsettings rows', error }} />
           : loading && rows.length === 0 ? <Loading what="appsettings" />
             : rows.length === 0 ? <Empty>No appsettings rows match these filters.</Empty>
               : (

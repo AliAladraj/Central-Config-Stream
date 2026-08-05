@@ -14,4 +14,9 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:8090',
     },
   },
+  // The tests cover pure functions only, so they need no DOM.
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.{js,jsx}'],
+  },
 })

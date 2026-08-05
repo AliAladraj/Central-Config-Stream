@@ -113,15 +113,21 @@ export function EventLog({ events }) {
   )
 }
 
-export function LivePanel({ snapshot, events, status }) {
+export function LivePanel({ snapshot, events, status, error }) {
   const [tab, setTab] = useState('cache')
   return (
     <aside className="live">
       <div className="live-head">
         <div className="live-title">
           Consumer · env {snapshot.environmentId ?? '…'}
-          <span className={`dot ${status === 'live' ? 'ok' : 'bad'}`} />
+          <span className={`dot ${status === 'live' && !error ? 'ok' : 'bad'}`} />
         </div>
+        {error && (
+          <div className="live-error" role="alert">
+            The consumer cache could not be read, so nothing below is known to be current.
+            <div className="t">{error.message}</div>
+          </div>
+        )}
         <div className="tabs">
           <button className={tab === 'cache' ? 'active' : ''} onClick={() => setTab('cache')}>Cache</button>
           <button className={tab === 'log' ? 'active' : ''} onClick={() => setTab('log')}>

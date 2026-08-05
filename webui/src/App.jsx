@@ -89,7 +89,7 @@ function useReference() {
 }
 
 export default function App() {
-  const { status, snapshot, events, pendingWrite } = useKvStream()
+  const { status, snapshot, events, pushes, stateError, resync, pendingWrite } = useKvStream()
   const [view, setView] = useState('overview')
   const [envId, setEnvId] = useState('')
   const [problem, setProblem] = useState(null)
@@ -112,6 +112,9 @@ export default function App() {
     resolver.current = null
   }, [])
 
+  const decline = useCallback(() => answer(false), [answer])
+  const accept = useCallback(() => answer(true), [answer])
+
   // write marks the pending write so the KV push that follows can be timed,
   // then reports either the elapsed round trip or the server's own error.
   const write = useCallback(async (action, fn) => {
@@ -129,13 +132,15 @@ export default function App() {
     }
   }, [pendingWrite])
 
-  const lastLatency = events.find((e) => e.latencyMs != null)?.latencyMs
+  // Only the newest event can carry a live latency. Reaching further back
+  // would leave an old write's number on screen as if it were this one's.
+  const lastLatency = events[0]?.latencyMs
   const View = VIEWS[view]
 
   const ctx = useMemo(() => ({
     envId, setEnvId, refs, write, confirm, snapshot, setView,
-    clearProblem: () => setProblem(null),
-  }), [envId, refs, write, confirm, snapshot])
+    consumerError: stateError, pushes, resync,
+  }), [envId, refs, write, confirm, snapshot, stateError, pushes, resync])
 
   return (
     <div className="shell">
@@ -157,7 +162,9 @@ export default function App() {
           <span className={`pill ${status === 'live' ? 'live' : status === 'disconnected' ? 'down' : ''}`}>
             {status === 'live' ? 'watching KV' : status}
           </span>
-          <span className="pill">consumer env {snapshot.environmentId ?? '…'}</span>
+          <span className={`pill ${stateError ? 'down' : ''}`}>
+            {stateError ? 'consumer cache unavailable' : `consumer env ${snapshot.environmentId ?? '…'}`}
+          </span>
           <span className="pill">
             {lastLatency != null ? `last push +${lastLatency}ms` : 'no push yet'}
           </span>
@@ -190,10 +197,10 @@ export default function App() {
           <View ctx={ctx} />
         </main>
 
-        <LivePanel snapshot={snapshot} events={events} status={status} />
+        <LivePanel snapshot={snapshot} events={events} status={status} error={stateError} />
       </div>
 
-      <Confirm request={confirmReq} onCancel={() => answer(false)} onConfirm={() => answer(true)} />
+      <Confirm request={confirmReq} onCancel={decline} onConfirm={accept} />
     </div>
   )
 }

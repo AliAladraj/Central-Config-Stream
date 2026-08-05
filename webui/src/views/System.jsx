@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as api from '../api.js'
-import { Empty, Loading } from '../ui.jsx'
+import { Banner, Loading } from '../ui.jsx'
 
 // /health, /metrics and /inventory as first-class reads. Metrics is Prometheus
 // text; the counters that say whether KV publishing is actually working are
@@ -51,7 +51,7 @@ function HealthMetrics() {
   }, [nonce])
 
   if (loading && !health) return <Loading what="health and metrics" />
-  if (error) return <Empty>Could not read health or metrics: {error.message}</Empty>
+  if (error) return <Banner problem={{ action: 'Read health and metrics', error }} />
 
   const parsed = parseMetrics(metrics ?? '')
 
@@ -129,7 +129,7 @@ function InventoryView() {
     return () => { live = false }
   }, [nonce])
 
-  if (error) return <Empty>Could not read the inventory: {error.message}</Empty>
+  if (error) return <Banner problem={{ action: 'Read the inventory', error }} />
   if (!inv) return <Loading what="the inventory" />
 
   const counts = [

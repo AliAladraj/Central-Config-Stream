@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import * as api from '../api.js'
-import { Empty, KvKey, Loading, Pager, fmtTime, useList } from '../ui.jsx'
+import { Banner, Empty, KvKey, Loading, Pager, fmtTime, useDebounced, useList, useResetOnChange } from '../ui.jsx'
 
 // Flags are the one domain where a value exists once per environment, so the
 // natural view is a matrix rather than a list: "what is search_v2 in prod"
@@ -32,9 +32,11 @@ function Matrix({ ctx }) {
   const [flagKey, setFlagKey] = useState('')
   const [cell, setCell] = useState(null) // { flagId, flagKey, environmentId, row|null }
 
+  const query = useDebounced(flagKey)
+
   const { rows, loading, error, reload } = useList(
-    () => api.listFlagValues({ flagKey, limit: 200 }),
-    [flagKey],
+    () => api.listFlagValues({ flagKey: query, limit: 200 }),
+    [query],
   )
 
   const byFlagEnv = useMemo(() => {
@@ -43,15 +45,17 @@ function Matrix({ ctx }) {
     return m
   }, [rows])
 
+  // Filtered on the settled query, not the keystroke, so the rows on screen and
+  // the value rows behind them always describe the same set of flags.
   const flags = useMemo(
-    () => refs.flags.filter((f) => !flagKey || f.flagKey.includes(flagKey)),
-    [refs.flags, flagKey],
+    () => refs.flags.filter((f) => !query || f.flagKey.includes(query)),
+    [refs.flags, query],
   )
   const envs = refs.environments
 
   const watched = snapshot.environmentId
 
-  if (error) return <Empty>Could not load flag values: {error.message}</Empty>
+  if (error) return <Banner problem={{ action: 'Load flag values', error }} />
 
   return (
     <div className="panel">
@@ -260,11 +264,13 @@ function ValueRows({ ctx }) {
   const [limit, setLimit] = useState(25)
   const [offset, setOffset] = useState(0)
 
+  const query = useDebounced(flagKey)
+  useResetOnChange(envId, () => setOffset(0))
+
   const { rows, loading, error, reload } = useList(
-    () => api.listFlagValues({ environmentId: envId, flagKey, limit, offset }),
-    [envId, flagKey, limit, offset],
+    () => api.listFlagValues({ environmentId: envId, flagKey: query, limit, offset }),
+    [envId, query, limit, offset],
   )
-  useEffect(() => { setOffset(0) }, [envId, flagKey])
 
   const remove = async (row) => {
     const ok = await confirm({
@@ -284,13 +290,13 @@ function ValueRows({ ctx }) {
       <div className="toolbar">
         <label className="field">
           <span>flagKey</span>
-          <input value={flagKey} onChange={(e) => setFlagKey(e.target.value)} placeholder="all" />
+          <input value={flagKey} onChange={(e) => { setFlagKey(e.target.value); setOffset(0) }} placeholder="all" />
         </label>
         <span className="t">environmentId comes from the header switcher</span>
         <button className="ghost" onClick={reload}>Refresh</button>
       </div>
 
-      {error ? <Empty>Could not load: {error.message}</Empty>
+      {error ? <Banner problem={{ action: 'Load flag value rows', error }} />
         : loading && rows.length === 0 ? <Loading what="flag values" />
           : rows.length === 0 ? <Empty>No flag values match. Set one from the matrix.</Empty>
             : (
@@ -335,9 +341,11 @@ function Definitions({ ctx }) {
   const [newKey, setNewKey] = useState('')
   const [newActive, setNewActive] = useState('1')
 
+  const query = useDebounced(flagKey)
+
   const { rows, loading, error, reload } = useList(
-    () => api.listFlags({ flagKey, limit, offset }),
-    [flagKey, limit, offset],
+    () => api.listFlags({ flagKey: query, limit, offset }),
+    [query, limit, offset],
   )
 
   const keyProblem = newKey === '' ? null
@@ -401,7 +409,7 @@ function Definitions({ ctx }) {
         <button className="ghost" onClick={reload}>Refresh</button>
       </div>
 
-      {error ? <Empty>Could not load: {error.message}</Empty>
+      {error ? <Banner problem={{ action: 'Load flag definitions', error }} />
         : loading && rows.length === 0 ? <Loading what="flags" />
           : rows.length === 0 ? <Empty>No flags yet. Create the first one above.</Empty>
             : (

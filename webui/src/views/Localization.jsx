@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../api.js'
-import { Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, useList } from '../ui.jsx'
+import { Banner, Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, useDebounced, useList, useResetOnChange } from '../ui.jsx'
 
 // One row is a whole locale bundle for a (service, environment, locale) tuple,
 // which is also exactly one KV key — apps load a locale atomically.
@@ -14,11 +14,13 @@ export default function Localization({ ctx }) {
   const [selected, setSelected] = useState(null)
   const [creating, setCreating] = useState(false)
 
+  const localeQuery = useDebounced(locale)
+  useResetOnChange(envId, () => setOffset(0))
+
   const { rows, loading, error, reload } = useList(
-    () => api.listLocalization({ microserviceId: msId, environmentId: envId, locale, limit, offset }),
-    [msId, envId, locale, limit, offset],
+    () => api.listLocalization({ microserviceId: msId, environmentId: envId, locale: localeQuery, limit, offset }),
+    [msId, envId, localeQuery, limit, offset],
   )
-  useEffect(() => { setOffset(0) }, [msId, envId, locale])
 
   const remove = async (row) => {
     const ok = await confirm({
@@ -47,20 +49,20 @@ export default function Localization({ ctx }) {
         <div className="toolbar">
           <label className="field">
             <span>microservice</span>
-            <select value={msId} onChange={(e) => setMsId(e.target.value)}>
+            <select value={msId} onChange={(e) => { setMsId(e.target.value); setOffset(0) }}>
               <option value="">All services</option>
               {refs.microservices.map((m) => <option key={m.id} value={m.id}>{m.name} (id {m.id})</option>)}
             </select>
           </label>
           <label className="field">
             <span>locale</span>
-            <input value={locale} onChange={(e) => setLocale(e.target.value)} placeholder="all" />
+            <input value={locale} onChange={(e) => { setLocale(e.target.value); setOffset(0) }} placeholder="all" />
           </label>
           <span className="t">environment comes from the header switcher</span>
           <button className="ghost" onClick={reload}>Refresh</button>
         </div>
 
-        {error ? <Empty>Could not load: {error.message}</Empty>
+        {error ? <Banner problem={{ action: 'Load localization bundles', error }} />
           : loading && rows.length === 0 ? <Loading what="bundles" />
             : rows.length === 0 ? <Empty>No bundles match these filters.</Empty>
               : (

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../api.js'
 import { computeDrift, driftLabel } from '../drift.js'
-import { Empty, KvKey, Loading, fmtTime } from '../ui.jsx'
+import { Banner, Empty, KvKey, Loading, fmtTime } from '../ui.jsx'
 
 // The landing view answers two questions: is the control plane healthy, and is
 // what the fleet is running the same as what the database says it should be.
@@ -10,7 +10,7 @@ import { Empty, KvKey, Loading, fmtTime } from '../ui.jsx'
 // prevent.
 
 export default function Overview({ ctx }) {
-  const { snapshot, refs, setView } = ctx
+  const { snapshot, refs, setView, consumerError, pushes, resync } = ctx
   const [state, setState] = useState({ loading: true })
   const [health, setHealth] = useState(null)
   const [recent, setRecent] = useState([])
@@ -18,10 +18,20 @@ export default function Overview({ ctx }) {
 
   const watched = snapshot.environmentId
 
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
+  // Re-check covers both sides of the comparison: the database rows below and
+  // the consumer cache they are compared against.
+  const reload = useCallback(() => {
+    resync()
+    setNonce((n) => n + 1)
+  }, [resync])
 
   useEffect(() => {
-    if (watched == null) return
+    // No consumer environment means no cache to compare against. Say so rather
+    // than leaving the panel spinning on a comparison that will never run.
+    if (watched == null) {
+      setState({ loading: false })
+      return
+    }
     let live = true
     setState((s) => ({ ...s, loading: true }))
     Promise.all([
@@ -37,6 +47,10 @@ export default function Overview({ ctx }) {
         setRecent(aud.data ?? [])
         setState({
           loading: false,
+          // The snapshot this verdict was computed from, so a push that lands
+          // afterwards can be reported instead of silently ageing the verdict.
+          basis: snapshot,
+          pushesAt: pushes,
           drift: computeDrift({
             watchedEnvId: watched,
             snapshot,
@@ -51,6 +65,11 @@ export default function Overview({ ctx }) {
     // Re-running on every KV push would hammer the API; the operator refreshes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watched, nonce])
+
+  // A push after the comparison can introduce the very drift the verdict says
+  // is absent. Refetching per push would hammer the API, so the verdict says
+  // how far behind it is instead.
+  const behind = state.drift && state.basis !== snapshot ? pushes - state.pushesAt : 0
 
   return (
     <>
@@ -82,9 +101,18 @@ export default function Overview({ ctx }) {
 
       <div className="panel">
         <h3 className="panel-title">Database vs consumer cache</h3>
-        {state.loading ? <Loading what="rows to compare" />
-          : state.error ? <Empty>Could not compare: {state.error.message}</Empty>
-            : <DriftReport drift={state.drift} refs={refs} />}
+        {consumerError ? (
+          <>
+            <div className="verdict bad">
+              Consumer cache unavailable. Nothing was compared, so this says nothing about whether
+              the fleet is in sync.
+            </div>
+            <p className="hint">{consumerError.message}</p>
+          </>
+        ) : state.loading ? <Loading what="rows to compare" />
+          : state.error ? <Banner problem={{ action: 'Compare the database with the consumer cache', error: state.error }} />
+            : state.drift ? <DriftReport drift={state.drift} refs={refs} behind={behind} onRecheck={reload} />
+              : <Empty>The consumer has not reported which environment it watches yet.</Empty>}
       </div>
 
       <div className="panel">
@@ -113,8 +141,14 @@ export default function Overview({ ctx }) {
   )
 }
 
-function DriftReport({ drift, refs }) {
+function DriftReport({ drift, refs, behind, onRecheck }) {
   const { issues, compared, outOfScope, watchedEnvId } = drift
+  const stale = behind > 0 && (
+    <p className="hint stale">
+      Recomputed {behind} push{behind === 1 ? '' : 'es'} ago — the cache has changed since.
+      <button className="ghost mini" onClick={onRecheck}>Re-check</button>
+    </p>
+  )
   const scope = (
     <p className="hint">
       This console holds one consumer, watching <strong>{refs.envName(watchedEnvId)}</strong> (id {watchedEnvId}).
@@ -130,6 +164,7 @@ function DriftReport({ drift, refs }) {
         <div className="verdict good">
           In sync. Every row in {refs.envName(watchedEnvId)} matches what the consumer is serving.
         </div>
+        {stale}
         {scope}
       </>
     )
@@ -141,6 +176,7 @@ function DriftReport({ drift, refs }) {
         {issues.length} difference{issues.length === 1 ? '' : 's'} between the database and what the
         consumer is serving.
       </div>
+      {stale}
       <table className="grid">
         <thead><tr><th>bucket</th><th>kv key</th><th>problem</th><th>detail</th></tr></thead>
         <tbody>

@@ -5,7 +5,7 @@ import { ApiError } from './api.js'
 // server's own message, what the status means, and the request id to quote —
 // is assembled in one place so no view can accidentally swallow part of it.
 
-export function Banner({ problem, onDismiss, onReload }) {
+export function Banner({ problem, onDismiss }) {
   if (!problem) return null
   const err = problem.error
   const status = err instanceof ApiError ? err.status : null
@@ -21,9 +21,6 @@ export function Banner({ problem, onDismiss, onReload }) {
       </div>
       <p className="banner-msg">{err?.message}</p>
       {explanation && <p className="banner-why">{explanation}</p>}
-      {status === 409 && onReload && (
-        <button className="ghost" onClick={onReload}>Reload the current row</button>
-      )}
       {err?.requestId && <p className="banner-id">request id {err.requestId}</p>}
     </div>
   )
@@ -35,7 +32,7 @@ export function Notice({ text }) {
 }
 
 export function Loading({ what = 'rows' }) {
-  return <div className="state"><span className="spinner" aria-hidden="true" /> Loading {what}…</div>
+  return <div className="state" role="status"><span className="spinner" aria-hidden="true" /> Loading {what}…</div>
 }
 
 export function Empty({ children }) {
@@ -75,15 +72,38 @@ export function Pager({ limit, offset, count, onOffset, onLimit }) {
   )
 }
 
+const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+
 // Confirm is deliberately modal and deliberately verbose about consequences:
 // deleting a flag takes its value rows in every environment with it, and that
-// has to be stated before the click, not after.
+// has to be stated before the click, not after. Cancel takes the focus for the
+// same reason — a dialog that exists to catch an accidental delete must not put
+// that delete under the Enter key.
 export function Confirm({ request, onCancel, onConfirm }) {
-  const btn = useRef(null)
+  const dialog = useRef(null)
+  const cancel = useRef(null)
+
   useEffect(() => {
     if (!request) return
-    btn.current?.focus()
-    const onKey = (e) => { if (e.key === 'Escape') onCancel() }
+    const opener = document.activeElement
+    cancel.current?.focus()
+    return () => { if (opener instanceof HTMLElement) opener.focus() }
+  }, [request])
+
+  useEffect(() => {
+    if (!request) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') { onCancel(); return }
+      if (e.key !== 'Tab') return
+      // Tab stays inside the dialog: the page behind it is not answerable yet.
+      const stops = dialog.current?.querySelectorAll(FOCUSABLE)
+      if (!stops?.length) return
+      const first = stops[0]
+      const last = stops[stops.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+      else if (!dialog.current.contains(document.activeElement)) { e.preventDefault(); first.focus() }
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [request, onCancel])
@@ -91,7 +111,7 @@ export function Confirm({ request, onCancel, onConfirm }) {
   if (!request) return null
   return (
     <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onCancel() }}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label={request.title}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-label={request.title} ref={dialog}>
         <h3>{request.title}</h3>
         <p>{request.body}</p>
         {request.consequences?.length > 0 && (
@@ -101,8 +121,8 @@ export function Confirm({ request, onCancel, onConfirm }) {
         )}
         {request.target && <div className="dialog-target">{request.target}</div>}
         <div className="dialog-actions">
-          <button className="ghost" onClick={onCancel}>Cancel</button>
-          <button ref={btn} className="danger" onClick={onConfirm}>{request.confirmLabel}</button>
+          <button ref={cancel} className="ghost" onClick={onCancel}>Cancel</button>
+          <button className="danger" onClick={onConfirm}>{request.confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -252,6 +272,30 @@ export function useList(loader, deps) {
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
   return { rows, loading, error, reload }
+}
+
+// useDebounced holds a typed filter still for a beat before it reaches useList.
+// Typing search_v2 is nine keystrokes and was nine requests; the seq guard kept
+// the result correct but the table flickered through eight throwaway renders.
+export function useDebounced(value, ms = 250) {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return settled
+}
+
+// useResetOnChange zeroes the pager when a filter owned elsewhere — the header
+// environment switcher — changes. It runs during render rather than in an
+// effect because an effect fires after useList has already fetched at the old
+// offset, which costs a second request for every switch.
+export function useResetOnChange(value, reset) {
+  const [seen, setSeen] = useState(value)
+  if (seen !== value) {
+    setSeen(value)
+    reset()
+  }
 }
 
 export const fmtTime = (iso) => (iso ? iso.replace('T', ' ').replace('Z', '') : '—')

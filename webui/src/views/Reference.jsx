@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import * as api from '../api.js'
-import { Empty, Loading, Pager, fmtTime, useList } from '../ui.jsx'
+import { Banner, Empty, Loading, Pager, fmtTime, useList } from '../ui.jsx'
 
 // Environments and microservices are the tables every other domain keys off.
 // Neither can be renamed through the API — they are create and delete only —
@@ -60,7 +60,7 @@ function Environments({ ctx }) {
       </div>
       <p className="hint">A new environment changes the set every token scope is expressed in, so this needs a full-scope token.</p>
 
-      {error ? <Empty>Could not load: {error.message}</Empty>
+      {error ? <Banner problem={{ action: 'Load environments', error }} />
         : loading && rows.length === 0 ? <Loading what="environments" />
           : rows.length === 0 ? <Empty>No environments. Nothing else can be configured until one exists.</Empty>
             : (
@@ -125,7 +125,7 @@ function Microservices({ ctx }) {
       </div>
       <p className="hint">A microservice belongs to no environment; its appsettings and bundles are per environment.</p>
 
-      {error ? <Empty>Could not load: {error.message}</Empty>
+      {error ? <Banner problem={{ action: 'Load microservices', error }} />
         : loading && rows.length === 0 ? <Loading what="microservices" />
           : rows.length === 0 ? <Empty>No microservices yet.</Empty>
             : (

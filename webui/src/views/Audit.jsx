@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useState } from 'react'
 import * as api from '../api.js'
-import { Empty, Loading, Pager, useList } from '../ui.jsx'
+import { Banner, Empty, Loading, Pager, useDebounced, useList } from '../ui.jsx'
 
 // The audit log is the only record that survives the change: a KV bucket holds
 // the current value and nothing else. It gets the full width of the view for
@@ -24,11 +24,14 @@ export default function Audit({ ctx }) {
   const [offset, setOffset] = useState(0)
   const [open, setOpen] = useState(null)
 
+  // The typed filter settles before it is queried; the dates are picked, not
+  // typed, so they go straight through.
+  const actorQuery = useDebounced(actor)
+
   const { rows, loading, error, reload } = useList(
-    () => api.listAudit({ actor, from, to, limit, offset }),
-    [actor, from, to, limit, offset],
+    () => api.listAudit({ actor: actorQuery, from, to, limit, offset }),
+    [actorQuery, from, to, limit, offset],
   )
-  useEffect(() => { setOffset(0) }, [actor, from, to])
 
   const failures = rows.filter((r) => r.statusCode >= 400).length
 
@@ -45,26 +48,30 @@ export default function Audit({ ctx }) {
         <div className="toolbar">
           <label className="field">
             <span>actor</span>
-            <input value={actor} onChange={(e) => setActor(e.target.value)} placeholder="any token name" />
+            <input
+              value={actor}
+              onChange={(e) => { setActor(e.target.value); setOffset(0) }}
+              placeholder="any token name"
+            />
           </label>
           <label className="field">
             <span>from</span>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setOffset(0) }} />
           </label>
           <label className="field">
             <span>to</span>
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setOffset(0) }} />
           </label>
           <button className="ghost" onClick={reload}>Refresh</button>
           {(actor || from || to) && (
-            <button className="ghost" onClick={() => { setActor(''); setFrom(''); setTo('') }}>Clear filters</button>
+            <button className="ghost" onClick={() => { setActor(''); setFrom(''); setTo(''); setOffset(0) }}>Clear filters</button>
           )}
           {rows.length > 0 && (
             <span className="t">{rows.length} entries · {failures} rejected</span>
           )}
         </div>
 
-        {error ? <Empty>Could not load the audit log: {error.message}</Empty>
+        {error ? <Banner problem={{ action: 'Load the audit log', error }} />
           : loading && rows.length === 0 ? <Loading what="audit entries" />
             : rows.length === 0 ? (
               <Empty>

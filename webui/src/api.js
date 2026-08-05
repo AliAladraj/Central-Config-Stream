@@ -83,16 +83,12 @@ const qs = (params) => {
 export const listEnvironments = (p = {}) => request('GET', `/environments${qs(p)}`)
 export const listMicroservices = (p = {}) => request('GET', `/microservices${qs(p)}`)
 export const listFlags = (p = {}) => request('GET', `/flags${qs(p)}`)
-export const getFlag = (id) => request('GET', `/flags/${id}`)
 export const listFlagValues = (p = {}) => request('GET', `/flags/values${qs(p)}`)
 export const getFlagValue = (id) => request('GET', `/flags/values/${id}`)
 export const listConfigs = (p = {}) => request('GET', `/configs/values${qs(p)}`)
 export const getConfig = (id) => request('GET', `/configs/values/${id}`)
-export const getMicroservice = (id) => request('GET', `/configs/${id}`)
 export const listLocalization = (p = {}) => request('GET', `/localization${qs(p)}`)
 export const getLocalization = (id) => request('GET', `/localization/${id}`)
-export const lookupLocalization = (msId, envId, locale) =>
-  request('GET', `/localization/lookup/${msId}/${envId}/${encodeURIComponent(locale)}`)
 export const listAudit = (p = {}) => request('GET', `/audit${qs(p)}`)
 export const getInventory = () => request('GET', '/inventory')
 export const getHealth = () => request('GET', '/health')
@@ -130,16 +126,16 @@ export const deleteLocalization = (id) => request('DELETE', `/localization/${id}
 
 // ── console-local ───────────────────────────────────────────────────────────
 
+// getState reads the consumer's own cache. Its failure is not cosmetic — with
+// no cache there is nothing to compare the database against — so the message
+// says what could not be reached rather than just a status.
 export async function getState() {
-  const r = await fetch('/api/state')
-  if (!r.ok) throw new Error(`state: HTTP ${r.status}`)
+  let r
+  try {
+    r = await fetch('/api/state')
+  } catch (err) {
+    throw new Error(`Could not reach the console for the consumer cache: ${err.message}`)
+  }
+  if (!r.ok) throw new Error(`GET /api/state returned HTTP ${r.status}`)
   return r.json()
 }
-
-// ── KV key layout, mirrored from the consumer ───────────────────────────────
-// Showing the key a row maps to is the fastest way to tell whether a push you
-// just saw belongs to the row you just edited.
-
-export const flagKvKey = (envId, flagKey) => `${envId}.${flagKey}`
-export const microKvKey = (envId, msId) => `${envId}.${msId}`
-export const localeKvKey = (envId, msId, locale) => `${envId}.${msId}.${locale}`

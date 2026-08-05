@@ -1,0 +1,39 @@
+# Secrets — never commit. See .env.example for the documented variable list.
+.env
+.env.*
+!.env.example
+*.creds
+
+# Binaries and build output. Anchored to the repo root so they match the
+# compiled binaries and not the cmd/testconsole source directory.
+/central-config
+/testconsole
+*.exe
+*.test
+*.out
+dist/
+bin/
+
+# Coverage
+coverage.*
+*.cover
+*.coverprofile
+
+# Local databases (SQLite test stack)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Test console UI: node_modules and the built bundle are not checked in.
+node_modules/
+webui/node_modules/
+/web/

@@ -246,22 +246,3 @@ func formatFloat(f float64) string {
 	}
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
-
-// ---- instruments ----
-//
-// The rest of the catalogue lives in instruments.go; these two belong with it
-// and are declared here only because that file is outside this change's reach.
-
-var (
-	// NATSUp separates "the distribution plane is down" from "the process is
-	// down". A NATS outage no longer stops the service booting, so without a
-	// gauge the degraded start is visible only in a log line at startup.
-	NATSUp = NewGauge("centralconfig_nats_up",
-		"1 when the KV buckets are provisioned and NATS is connected, 0 otherwise.")
-
-	// ReconcilePruneRefused fires when a sweep proposed deleting more of a
-	// bucket than the ceiling allows. It means KV and the database disagree
-	// wholesale, which is worth an alert on the first occurrence.
-	ReconcilePruneRefused = NewCounter("centralconfig_reconcile_prune_refused_total",
-		"Prune passes refused because they would have deleted too much of a bucket, by bucket.")
-)

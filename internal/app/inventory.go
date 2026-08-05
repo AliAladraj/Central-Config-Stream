@@ -11,10 +11,15 @@ import (
 	"github.com/ErasedKyte/Central-Config-Stream/internal/web"
 )
 
-// Inventory lists every editable row with its primary key. Admin tools need
+// Inventory lists the editable rows with their primary keys. Admin tools need
 // this because the IDs an update targets are data, not something a caller can
 // know up front. Read-only, and it reuses the reconciler's list queries rather
 // than adding new ones.
+//
+// Each of the three collections is paged independently by the same ?limit and
+// ?offset, so a caller walks all three together; the reconcile queries return
+// every row and the page is taken here, which is why the limit matters — the
+// response is the whole configuration estate otherwise.
 type Inventory struct {
 	Flags        []InventoryFlag  `json:"flags"`
 	MicroConfigs []InventoryMicro `json:"microConfigs"`
@@ -51,9 +56,16 @@ type inventoryHandler struct {
 }
 
 func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	limit, offset, err := web.ParsePage(r)
+	if err != nil {
+		web.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	page := pager{limit: limit, offset: offset}
 	var inv Inventory
 
 	// The driver errors name tables, connection strings and file paths; they go
@@ -65,7 +77,11 @@ func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		web.Error(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	flags := page.reset()
 	for _, row := range flagRows {
+		if !inScope(r, row.EnvironmentID) || !flags.take() {
+			continue
+		}
 		inv.Flags = append(inv.Flags, InventoryFlag{
 			ID:            row.ID,
 			EnvironmentID: row.EnvironmentID,
@@ -81,7 +97,11 @@ func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		web.Error(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	micro := page.reset()
 	for _, row := range microRows {
+		if !inScope(r, row.EnvironmentID) || !micro.take() {
+			continue
+		}
 		inv.MicroConfigs = append(inv.MicroConfigs, InventoryMicro{
 			ID:             row.ID,
 			MicroserviceID: row.MicroserviceID,
@@ -96,7 +116,11 @@ func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		web.Error(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	loc := page.reset()
 	for _, row := range locRows {
+		if !inScope(r, row.EnvironmentID) || !loc.take() {
+			continue
+		}
 		inv.Localization = append(inv.Localization, InventoryLoc{
 			ID:             row.ID,
 			MicroserviceID: row.MicroserviceID,
@@ -107,4 +131,32 @@ func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	web.JSON(w, http.StatusOK, inv)
+}
+
+// pager applies ?limit and ?offset to rows the query returned in full. It
+// counts only the rows the caller is allowed to see, so a scoped token pages
+// through its own environments rather than through gaps left by another's.
+type pager struct {
+	limit  int
+	offset int
+
+	seen  int
+	taken int
+}
+
+// reset returns a fresh pager over the same page, one per collection.
+func (p pager) reset() *pager { return &pager{limit: p.limit, offset: p.offset} }
+
+// take reports whether the next in-scope row belongs on this page.
+func (p *pager) take() bool {
+	if p.seen < p.offset {
+		p.seen++
+		return false
+	}
+	if p.taken >= p.limit {
+		return false
+	}
+	p.seen++
+	p.taken++
+	return true
 }

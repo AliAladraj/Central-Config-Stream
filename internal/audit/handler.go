@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -13,12 +14,29 @@ import (
 // hand is not.
 const dateOnlyLayout = "2006-01-02"
 
+type scopeKey struct{}
+
+// WithEnvironments narrows what the request may read to the given environment
+// ids. The admin API resolves the reader's credential and applies its scope
+// here, so a request that arrives unnarrowed reads the whole trail — which is
+// what a full-scope token, and a deployment with auth disabled, is entitled to.
+func WithEnvironments(r *http.Request, envs []int64) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), scopeKey{}, envs))
+}
+
+func environmentsFrom(r *http.Request) []int64 {
+	envs, _ := r.Context().Value(scopeKey{}).([]int64)
+	return envs
+}
+
 // Handler serves the audit log.
 //
 //	GET /audit?actor=&from=&to=&limit=&offset=
 //
 // It follows the list-endpoint conventions of the domain handlers: ParsePage
-// for the page, a flat JSON array, and no internal detail in error bodies.
+// for the page, a flat JSON array, and no internal detail in error bodies. The
+// rows carry request bodies from every environment, so the reader's scope
+// (WithEnvironments) narrows the listing the same way it narrows a write.
 type Handler struct {
 	store *Store
 }
@@ -46,11 +64,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries, err := h.store.List(r.Context(), Filter{
-		Actor:  r.URL.Query().Get("actor"),
-		From:   from,
-		To:     to,
-		Limit:  limit,
-		Offset: offset,
+		Actor:        r.URL.Query().Get("actor"),
+		From:         from,
+		To:           to,
+		Environments: environmentsFrom(r),
+		Limit:        limit,
+		Offset:       offset,
 	})
 	if err != nil {
 		// The driver error names tables and connection strings; it belongs in

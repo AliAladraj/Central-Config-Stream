@@ -12,9 +12,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/ErasedKyte/Central-Config-Stream/internal/audit"
 	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
 	"github.com/ErasedKyte/Central-Config-Stream/internal/web"
 )
@@ -98,11 +100,17 @@ func parseAdminTokens(named, shared string) (*tokenSet, error) {
 		// startup logs are not a place to print secrets.
 		parts := strings.SplitN(entry, ":", 3)
 		if len(parts) != 3 {
-			return nil, fmt.Errorf("ADMIN_TOKENS entry %d: want name:scope:secret", i+1)
+			return nil, fmt.Errorf("ADMIN_TOKENS entry %d: want name:scope:secret "+
+				"(a secret must not contain a comma — entries are comma separated)", i+1)
 		}
 		name, scope, secret := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), parts[2]
 		if name == "" || secret == "" {
 			return nil, fmt.Errorf("ADMIN_TOKENS entry %d: name and secret are required", i+1)
+		}
+		if !validTokenName(name) {
+			return nil, fmt.Errorf("ADMIN_TOKENS entry %d: %q is not a usable token name "+
+				"(letters, digits, dot, dash and underscore, up to %d characters) — "+
+				"a secret containing a comma splits into an entry of its own", i+1, name, maxTokenName)
 		}
 		envs, err := parseTokenScope(scope)
 		if err != nil {
@@ -115,6 +123,31 @@ func parseAdminTokens(named, shared string) (*tokenSet, error) {
 		set.tokens = append(set.tokens, adminToken{name: sharedTokenName, secret: []byte(shared)})
 	}
 	return set, nil
+}
+
+// maxTokenName matches the CONFIG_AUDIT_LOG.ACTOR column the name is recorded
+// in.
+const maxTokenName = 100
+
+// validTokenName constrains a token name to a plain label. It is what an
+// operator chose to call a credential and it ends up in the audit trail and in
+// every access-log line, so it is checked rather than trusted — and because
+// ADMIN_TOKENS is split on commas before it is split on colons, the check is
+// also what catches a secret that contains a comma and has quietly become an
+// entry, and a full-scope token, of its own.
+func validTokenName(name string) bool {
+	if name == "" || len(name) > maxTokenName {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseTokenScope(scope string) (map[int64]bool, error) {
@@ -196,32 +229,27 @@ type security struct {
 	sqlite  bool
 }
 
-// guard wraps a mutating handler with the write rate limiter, the named-token
-// check and the environment scope check, and publishes what the request targets
-// to the audit record.
+// guard wraps a mutating handler with the named-token check, the per-credential
+// write budget and the environment scope check, and publishes what the request
+// targets to the audit record.
 func (s *security) guard(class targetClass, domain string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if retry, ok := s.limiter.allow(rateLimitKey(r)); !ok {
-			w.Header().Set("Retry-After", strconv.Itoa(retry))
-			web.Error(w, http.StatusTooManyRequests, "too many write requests")
-			return
-		}
-
 		sink := sinkFrom(r)
 
-		// Authenticate before resolving the target: an unauthenticated caller
-		// must not be able to make the API run database lookups.
-		var token adminToken
+		// Authenticate before anything else: an unauthenticated caller must not
+		// be able to make the API run database lookups, and a write budget is
+		// only worth keeping per credential once the credential is known to be
+		// one. The unauthenticated flood is bounded by address at the edge.
+		token, ok := s.authenticate(w, r)
+		if !ok {
+			return
+		}
 		if s.tokens.enabled() {
-			got, prefixed := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-			found, ok := s.tokens.lookup(got)
-			if !prefixed || !ok {
-				web.Error(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			token = found
 			if sink != nil {
 				sink.actor = token.name
+			}
+			if !s.spend(w, tokenKey(token.name)) {
+				return
 			}
 		}
 
@@ -234,7 +262,7 @@ func (s *security) guard(class targetClass, domain string, next http.HandlerFunc
 			}
 		}
 
-		if s.tokens.enabled() && !token.allows(target) {
+		if !token.allows(target) {
 			web.Error(w, http.StatusForbidden, "token is not scoped to this environment")
 			return
 		}
@@ -243,22 +271,261 @@ func (s *security) guard(class targetClass, domain string, next http.HandlerFunc
 	}
 }
 
-// requireAuth protects a read route that is not itself a write: the audit log
-// carries request bodies, so it is not open the way the config reads are. No
-// environment scope applies — every named token may read the trail.
-func (s *security) requireAuth(next http.Handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.tokens.enabled() {
-			next.ServeHTTP(w, r) // auth disabled (dev only; warned at startup)
-			return
-		}
-		got, prefixed := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if _, ok := s.tokens.lookup(got); !prefixed || !ok {
-			web.Error(w, http.StatusUnauthorized, "unauthorized")
+// authenticate matches the bearer token, answering 401 itself when it does not.
+// The zero adminToken it reports when auth is disabled (dev only; warned at
+// startup) is full scope, which is what an unprotected deployment already is.
+func (s *security) authenticate(w http.ResponseWriter, r *http.Request) (adminToken, bool) {
+	if !s.tokens.enabled() {
+		return adminToken{}, true
+	}
+	got, prefixed := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	found, ok := s.tokens.lookup(got)
+	if !prefixed || !ok {
+		web.Error(w, http.StatusUnauthorized, "unauthorized")
+		return adminToken{}, false
+	}
+	return found, true
+}
+
+// spend charges one write against key and answers 429 with a Retry-After when
+// the bucket is empty.
+func (s *security) spend(w http.ResponseWriter, key string) bool {
+	retry, ok := s.limiter.allow(key)
+	if ok {
+		return true
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	web.Error(w, http.StatusTooManyRequests, "too many write requests")
+	return false
+}
+
+// limitWrites is the outermost gate on a mutating request, and it keys on the
+// client address because at this point nothing about the caller has been
+// checked. It runs ahead of the audit middleware: without it an unauthenticated
+// request to any path — including one matching no route — buys a megabyte of
+// body read, a full JSON walk and a synchronous insert into the audit table,
+// which is a write primitive with no credential in front of it.
+func (s *security) limitWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isMutating(r.Method) && !s.spend(w, addressKey(r)) {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// readClass says how a read route's response relates to the caller's
+// environment scope. Like a write's targetClass it is declared where the route
+// is registered, because what a response holds is a property of the route and
+// not something the response body can be trusted to announce.
+type readClass int
+
+const (
+	// classReadNeutral returns rows that belong to no environment — the flag
+	// and microservice definitions, and the reference tables' own names.
+	// Authentication applies to it, scope does not.
+	classReadNeutral readClass = iota
+	// classReadEnvRows returns rows that name their environment in
+	// environmentId: the flag values, the appsettings and the bundles.
+	classReadEnvRows
+	// classReadEnvs returns the environment rows themselves, whose own id is
+	// the environment.
+	classReadEnvs
+	// classReadAudit returns the trail, which the store narrows in SQL from the
+	// scope this guard hands it rather than after the fact.
+	classReadAudit
+	// classReadInventory returns every editable row across all three domains;
+	// that handler pages and narrows itself from the scope in the context.
+	classReadInventory
+)
+
+// scopeField is the JSON field a row of this class names its environment in,
+// or "" when the response is not narrowed on the way out.
+func (c readClass) scopeField() string {
+	switch c {
+	case classReadEnvRows:
+		return "environmentId"
+	case classReadEnvs:
+		return "id"
+	default:
+		return ""
 	}
+}
+
+// read wraps a read route with authentication and narrows what comes back to
+// the environments the caller's token names. Reads used to be open, which made
+// a single anonymous GET enough to walk off with the whole configuration
+// estate — every appsettings tree, every bundle and every flag value, for
+// production as readily as for dev.
+func (s *security) read(class readClass, next http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := s.authenticate(w, r)
+		if !ok {
+			return
+		}
+		if token.envs == nil {
+			next.ServeHTTP(w, r) // full scope
+			return
+		}
+
+		// The handlers this package owns narrow their own rows, from the scope
+		// on the context. The domain handlers have no notion of a token, so
+		// their responses are narrowed on the way out instead.
+		r = withScope(r, token.envs)
+		if class == classReadAudit {
+			r = audit.WithEnvironments(r, scopeList(token.envs))
+		}
+
+		field := class.scopeField()
+		if field == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sw := &scopeWriter{ResponseWriter: w, envs: token.envs, field: field}
+		next.ServeHTTP(sw, r)
+		sw.flush()
+	}
+}
+
+type scopeKey struct{}
+
+// withScope publishes the caller's environment scope for the handlers that
+// narrow their own rows.
+func withScope(r *http.Request, envs map[int64]bool) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), scopeKey{}, envs))
+}
+
+// inScope reports whether the caller may see rows living in env. An absent
+// scope is full scope: the read guard publishes one only for a token that has a
+// narrower one, and a deployment with auth disabled has no scopes at all.
+func inScope(r *http.Request, env int64) bool {
+	envs, ok := r.Context().Value(scopeKey{}).(map[int64]bool)
+	if !ok {
+		return true
+	}
+	return envs[env]
+}
+
+// scopeList renders a scope as the sorted id list a store binds.
+func scopeList(envs map[int64]bool) []int64 {
+	out := make([]int64, 0, len(envs))
+	for env := range envs {
+		out = append(out, env)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// scopeWriter narrows a read response to the caller's scope on the way out. The
+// domain handlers page in the database and this runs after, so a scoped caller
+// can see fewer than ?limit rows on a page — the cost of not teaching handlers
+// that answer for one row at a time about credentials.
+type scopeWriter struct {
+	http.ResponseWriter
+	envs  map[int64]bool
+	field string
+
+	body   bytes.Buffer
+	status int
+	direct bool
+}
+
+func (w *scopeWriter) WriteHeader(code int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = code
+	// Only a successful response carries rows; an error body is the handler's
+	// own message and goes out as written.
+	if code != http.StatusOK {
+		w.direct = true
+		w.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (w *scopeWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.direct {
+		return w.ResponseWriter.Write(b)
+	}
+	return w.body.Write(b)
+}
+
+// flush sends what survived the scope. A response that was passed straight
+// through, or a handler that wrote nothing at all, has nothing left to do.
+func (w *scopeWriter) flush() {
+	if w.direct || w.status == 0 {
+		return
+	}
+	switch status, body := scopeFilter(w.body.Bytes(), w.envs, w.field); status {
+	case http.StatusOK:
+		w.ResponseWriter.WriteHeader(w.status)
+		_, _ = w.ResponseWriter.Write(body)
+	case http.StatusNotFound:
+		web.Error(w.ResponseWriter, http.StatusNotFound, "not found")
+	default:
+		web.Error(w.ResponseWriter, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+// scopeFilter narrows a response body, reporting the status to answer with. A
+// listing keeps the rows the scope covers; a single row outside it answers 404,
+// the same as one that does not exist — any other answer confirms it does. A
+// body that does not decode is not something a handler here produces, and it is
+// not forwarded on the chance that it holds rows this caller may not see.
+func scopeFilter(body []byte, envs map[int64]bool, field string) (int, []byte) {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	switch {
+	case len(trimmed) == 0:
+		return http.StatusOK, body
+
+	case trimmed[0] == '[':
+		var rows []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return http.StatusInternalServerError, nil
+		}
+		kept := make([]json.RawMessage, 0, len(rows))
+		for _, row := range rows {
+			if env, ok := rowEnvironment(row, field); ok && envs[env] {
+				kept = append(kept, row)
+			}
+		}
+		out, err := json.Marshal(kept)
+		if err != nil {
+			return http.StatusInternalServerError, nil
+		}
+		return http.StatusOK, append(out, '\n')
+
+	case trimmed[0] == '{':
+		if env, ok := rowEnvironment(trimmed, field); !ok || !envs[env] {
+			return http.StatusNotFound, nil
+		}
+		return http.StatusOK, body
+
+	default:
+		return http.StatusInternalServerError, nil
+	}
+}
+
+// rowEnvironment reads the environment a response row belongs to. A row that
+// does not name one is outside every narrowed scope: the guard cannot tell
+// whether it is harmless or the one row that matters.
+func rowEnvironment(row []byte, field string) (int64, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(row, &fields); err != nil {
+		return 0, false
+	}
+	raw, ok := fields[field]
+	if !ok {
+		return 0, false
+	}
+	var env int64
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return 0, false
+	}
+	return env, true
 }
 
 // bodyFields are the only body values the guard reads. Decoding into a narrow
@@ -402,8 +669,30 @@ func warnIfTLSDisabled(cfg *Config) {
 	}
 }
 
-// tlsConfig is the server profile used when a certificate is configured: TLS
-// 1.2 floor, so a downgrade cannot get an admin token onto a legacy cipher.
+// tlsConfig is the server profile used when a certificate is configured: a TLS
+// 1.3 floor, so a downgrade cannot get an admin token onto a legacy cipher.
+// Everything that talks to this API is either a browser or a Go client — the
+// console proxy, the configclient fallback, Prometheus — and all of them have
+// spoken 1.3 for years; nothing in the stack needs 1.2 kept open.
 func tlsConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS12}
+	return &tls.Config{MinVersion: tls.VersionTLS13}
+}
+
+// hstsMaxAge is a year, the value below which preload lists ignore the header.
+const hstsMaxAge = "max-age=31536000; includeSubDomains"
+
+// securityHeaders sets what belongs on every response regardless of route.
+// internal/web writes the bodies but the headers are an edge concern, and this
+// is the only middleware every response passes through. HSTS goes out only on a
+// connection that is really TLS: over plain HTTP it means nothing, and a
+// deployment terminating TLS at an ingress sets it there, where the certificate
+// and the hostname actually live.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", hstsMaxAge)
+		}
+		next.ServeHTTP(w, r)
+	})
 }

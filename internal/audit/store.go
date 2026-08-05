@@ -97,6 +97,20 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Entry, error) {
 		args = append(args, s.timeArg(filter.To))
 		where = append(where, "OCCURRED_AT <= "+s.bind(len(args)))
 	}
+	if filter.Environments != nil {
+		// An empty scope matches nothing, which is what a token scoped to no
+		// environment should see; NULL never satisfies IN, so the rows that
+		// carry no environment fall out here on their own.
+		binds := make([]string, 0, len(filter.Environments))
+		for _, env := range filter.Environments {
+			args = append(args, env)
+			binds = append(binds, s.bind(len(args)))
+		}
+		if len(binds) == 0 {
+			return []Entry{}, nil
+		}
+		where = append(where, "ENVIRONMENT_ID IN ("+strings.Join(binds, ", ")+")")
+	}
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, " AND ")
 	}

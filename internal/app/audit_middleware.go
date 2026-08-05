@@ -46,18 +46,26 @@ type auditRecorder interface {
 	Insert(ctx context.Context, e audit.Entry) error
 }
 
-// auditWrites records every mutating request. It wraps the whole mux rather
-// than each route so that writes which never reach a handler — an unknown path,
-// a rejected token — are recorded too.
+// auditWrites records every mutating request that is addressed at a route. It
+// wraps the whole mux rather than each route so that a write which never
+// reaches a handler — a rejected token, a scope the credential does not cover —
+// is recorded too, which is the trail that shows someone probing production
+// with the wrong credential.
+//
+// routed reports whether the mux has a handler for the request, and must not be
+// nil. A write matching no route changes nothing, so recording it buys nothing
+// and costs a megabyte of body read, a full JSON walk and a synchronous insert
+// per request — an unauthenticated way to flood the audit table, exhaust the
+// connection pool and bury the real trail in noise.
 //
 // The insert deliberately cannot fail the request: it happens after the change
 // has already been committed to Oracle and published to KV, so returning an
 // error would report a failure that did not happen. Same philosophy as the KV
 // publish path, which logs and lets the reconciler heal.
-func auditWrites(rec auditRecorder, next http.Handler) http.Handler {
+func auditWrites(rec auditRecorder, routed func(*http.Request) bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isMutating(r.Method) {
-			next.ServeHTTP(w, r) // reads are not audited
+		if !isMutating(r.Method) || !routed(r) {
+			next.ServeHTTP(w, r) // reads, and writes addressed at nothing
 			return
 		}
 

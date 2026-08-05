@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -212,6 +213,68 @@ func TestParseAdminTokensRejectsMalformedEntries(t *testing.T) {
 		if _, err := parseAdminTokens(entry, ""); err == nil {
 			t.Errorf("parseAdminTokens(%q) accepted a malformed entry", entry)
 		}
+	}
+}
+
+// ADMIN_TOKENS is split on commas before it is split on colons, so a secret
+// containing one silently becomes an entry of its own — and, if the fragment
+// happens to read as name:scope:secret, a second token with a scope nobody
+// granted it. The name is what gives that away: it is an operator's label, and
+// a slice of a generated secret does not look like one.
+func TestParseAdminTokensRejectsSecretsSplitOnAComma(t *testing.T) {
+	cases := []string{
+		"alice:*:s3c,ret",               // the tail is not an entry at all
+		"alice:*:s3cret,aGVsbG8=:*:xyz", // the tail reads as a full-scope entry
+		"alice:*:s3cret,a+b/c:1:xyz",
+		"alice:*:s3cret, spaced name:*:xy",
+	}
+	for _, entry := range cases {
+		if _, err := parseAdminTokens(entry, ""); err == nil {
+			t.Errorf("parseAdminTokens(%q) minted a token from a secret fragment", entry)
+		}
+	}
+
+	// A name that really is a name is still accepted, and the secret it names
+	// may hold anything else — colons included.
+	set, err := parseAdminTokens("ci-dev.eu_1:1|2:s3c:ret:with:colons", "")
+	if err != nil {
+		t.Fatalf("a well-formed entry was rejected: %v", err)
+	}
+	if _, ok := set.lookup("s3c:ret:with:colons"); !ok {
+		t.Error("the secret did not survive parsing")
+	}
+	if len(set.tokens) != 1 {
+		t.Errorf("got %d tokens, want 1", len(set.tokens))
+	}
+}
+
+// nosniff goes on every response the API writes, and HSTS only when the
+// connection is really TLS.
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	h := securityHeaders(http.HandlerFunc(okHandler))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/flags", nil))
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HSTS promised over plain HTTP: %q", got)
+	}
+
+	tlsReq := httptest.NewRequest(http.MethodGet, "/flags", nil)
+	tlsReq.TLS = &tls.ConnectionState{}
+	tlsRec := httptest.NewRecorder()
+	h.ServeHTTP(tlsRec, tlsReq)
+	if got := tlsRec.Header().Get("Strict-Transport-Security"); got != hstsMaxAge {
+		t.Errorf("Strict-Transport-Security = %q, want %q", got, hstsMaxAge)
+	}
+}
+
+// A downgrade must not be able to put an admin token on a legacy cipher.
+func TestTLSFloorIsModern(t *testing.T) {
+	if got := tlsConfig().MinVersion; got != tls.VersionTLS13 {
+		t.Errorf("TLS floor = %#x, want TLS 1.3 (%#x)", got, tls.VersionTLS13)
 	}
 }
 

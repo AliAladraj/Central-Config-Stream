@@ -7,6 +7,11 @@ package obs
 // KV distribution. A publish failure is the drift the reconciler exists to
 // heal; it is silent from the caller's side, so it has to be countable.
 var (
+	// NATSUp separates "the distribution plane is down" from "the process is
+	// down". A NATS outage no longer stops the service booting, so without a
+	// gauge the degraded start is visible only in a log line at startup.
+	NATSUp = NewGauge("centralconfig_nats_up",
+		"1 when the KV buckets are provisioned and NATS is connected, 0 otherwise.")
 	KVPublishAttempts = NewCounter("centralconfig_kv_publish_attempts_total",
 		"KV publish attempts, by bucket.")
 	KVPublishSuccess = NewCounter("centralconfig_kv_publish_success_total",
@@ -30,6 +35,11 @@ var (
 		"Keys republished from the database to KV, by source.")
 	ReconcileKeysPruned = NewCounter("centralconfig_reconcile_keys_pruned_total",
 		"KV keys deleted because their database row is gone, by bucket.")
+	// ReconcilePruneRefused fires when a sweep proposed deleting more of a
+	// bucket than the ceiling allows. It means KV and the database disagree
+	// wholesale, which is worth an alert on the first occurrence.
+	ReconcilePruneRefused = NewCounter("centralconfig_reconcile_prune_refused_total",
+		"Prune passes refused because they would have deleted too much of a bucket, by bucket.")
 	ReconcileSourceFailures = NewCounter("centralconfig_reconcile_source_failures_total",
 		"Reconcile sources that failed to resync, by source.")
 	ReconcileLastSuccess = NewGauge("centralconfig_reconcile_last_success_timestamp_seconds",

@@ -99,29 +99,32 @@ func NewApp(cfg *Config) (*App, error) {
 	router := NewRouter(microHandler, flagsHandler, locHandler, sec,
 		app.healthHandler(), inventory, audit.NewHandler(auditStore))
 
-	// Liveness is deliberately not part of the router's own table: /health is
-	// readiness and answers for the dependencies, /livez answers only for the
-	// process. Registering it here keeps the two from ever being confused for
-	// one another.
-	router.HandleFunc("GET /livez", livezHandler)
-
 	// The metric label for a request is the route it matched, which only the
 	// mux knows; asking it keeps the label bounded by the routing table rather
-	// than by whatever paths get probed.
+	// than by whatever paths get probed. The same answer tells the audit
+	// middleware whether a write is addressed at anything at all.
 	routeOf := func(r *http.Request) string {
 		if _, pattern := router.Handler(r); pattern != "" {
 			return pattern
 		}
 		return "other"
 	}
+	routed := func(r *http.Request) bool {
+		_, pattern := router.Handler(r)
+		return pattern != ""
+	}
 
 	app.tlsCertFile, app.tlsKeyFile = cfg.TLSCertFile, cfg.TLSKeyFile
 	app.server = &http.Server{
 		Addr: cfg.ServerPort,
-		// Auditing wraps the whole mux so that writes which never reach a
-		// handler — unknown path, rejected token — are recorded too, and the
-		// access log wraps that so every request is correlated and timed.
-		Handler:           observe(routeOf, auditWrites(auditStore, router)),
+		// Outside in: the headers that belong on every response, then the
+		// access log and panic recovery so nothing below can drop a request
+		// unobserved, then the address-keyed write limiter — ahead of the
+		// audit insert, which is itself a database write an unauthenticated
+		// caller must not be able to aim — then auditing, which records every
+		// write that reaches a real route including one the guard rejects.
+		Handler: securityHeaders(observe(routeOf,
+			sec.limitWrites(auditWrites(auditStore, routed, router)))),
 		ErrorLog:          obs.StdLogger("http", slog.LevelWarn),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
@@ -148,7 +151,12 @@ func NewApp(cfg *Config) (*App, error) {
 func openDB(cfg *Config) (*sql.DB, error) {
 	switch strings.ToLower(cfg.DBDriver) {
 	case "", "oracle":
-		db, err := database.NewOracleDB(cfg.DBConnString)
+		db, err := database.NewOracleDBWithPool(cfg.DBConnString, database.PoolOptions{
+			MaxOpenConns:    cfg.DBMaxOpenConns,
+			MaxIdleConns:    cfg.DBMaxIdleConns,
+			ConnMaxLifetime: cfg.DBConnMaxLifetime,
+			ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("create oracle db: %w", err)
 		}

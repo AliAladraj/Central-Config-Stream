@@ -23,6 +23,14 @@ type Config struct {
 	DBConnString string
 	ServerPort   string
 
+	// Connection pool bounds. A zero field takes the database package's own
+	// default; they are read here so every tunable an operator sets is visible
+	// in one place rather than in whichever package happens to consume it.
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime time.Duration
+	DBConnMaxIdleTime time.Duration
+
 	// Messaging / JetStream
 	NATSURL        string
 	NATSCreds      string // optional path to a .creds file
@@ -63,6 +71,10 @@ func LoadConfig() *Config {
 		DBDriver:          getEnv("DB_DRIVER", "oracle"),
 		DBConnString:      getEnv("CONN_STRING", ""),
 		ServerPort:        getEnv("PORT", ":8080"),
+		DBMaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 0),
+		DBMaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 0),
+		DBConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", 0),
+		DBConnMaxIdleTime: getEnvDuration("DB_CONN_MAX_IDLE_TIME", 0),
 		NATSURL:           getEnv("NATS_URL", ""),
 		NATSCreds:         getEnv("NATS_CREDS", ""),
 		PublishEnabled:    getEnvBool("PUBLISH_ENABLED", false),
@@ -129,9 +141,11 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// NewRouter registers the API. Read routes stay open; every write goes through
-// sec.guard, which declares how that route's target environment is found so a
-// token can only reach the environments its scope names.
+// NewRouter registers the API. Every write goes through sec.guard, which
+// declares how that route's target environment is found so a token can only
+// reach the environments its scope names; every read goes through sec.read,
+// which declares how that route's response is narrowed to the same scope. The
+// probe and scrape routes are the only open ones.
 func NewRouter(
 	h *microconfig.Handler,
 	fh *flagsconfig.Handler,
@@ -143,55 +157,58 @@ func NewRouter(
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
+	// Readiness answers for the dependencies; liveness answers only for the
+	// process, so that an outage in either takes the pod out of the load
+	// balancer rather than getting every replica killed and restarted.
 	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /livez", livezHandler)
 
-	// Prometheus scrape target. Open like /health: it carries counters, not
+	// Prometheus scrape target. Open like the probes: it carries counters, not
 	// configuration values.
 	mux.Handle("GET /metrics", obs.Handler())
 
 	// every editable row + its id, so admin tools do not have to guess ids
-	mux.Handle("GET /inventory", inventory)
+	mux.HandleFunc("GET /inventory", sec.read(classReadInventory, inventory))
 
-	// The audit trail carries request bodies, so unlike the config reads it is
-	// not open — any named token may read it.
-	mux.HandleFunc("GET /audit", sec.requireAuth(auditLog))
+	mux.HandleFunc("GET /audit", sec.read(classReadAudit, auditLog))
 
 	// reference tables every other domain keys off
-	mux.HandleFunc("GET /environments", h.ListEnvironments)
+	mux.HandleFunc("GET /environments", sec.read(classReadEnvs, http.HandlerFunc(h.ListEnvironments)))
 	// Adding an environment changes the set every other scope is expressed in.
 	mux.HandleFunc("POST /environments", sec.guard(classGlobal, "environments", h.CreateEnvironment))
 	// Here {id} is itself the environment id.
 	mux.HandleFunc("DELETE /environments/{id}", sec.guard(classEnvPath, "environments", h.DeleteEnvironment))
 
-	mux.HandleFunc("GET /microservices", h.ListMicroservices)
+	mux.HandleFunc("GET /microservices", sec.read(classReadNeutral, http.HandlerFunc(h.ListMicroservices)))
 	mux.HandleFunc("POST /microservices", sec.guard(classNeutral, "microservices", h.CreateMicroservice))
 	mux.HandleFunc("DELETE /microservices/{id}", sec.guard(classGlobal, "microservices", h.DeleteMicroservice))
 
-	// microservice appsettings
-	mux.HandleFunc("GET /configs/{id}", h.GetMicroservice)
-	mux.HandleFunc("GET /configs/values", h.ListMicroserviceConfigs)
-	mux.HandleFunc("GET /configs/values/{id}", h.GetMicroserviceConfig)
+	// microservice appsettings. GET /configs/{id} is the microservice
+	// definition, which belongs to no environment; the values below do.
+	mux.HandleFunc("GET /configs/{id}", sec.read(classReadNeutral, http.HandlerFunc(h.GetMicroservice)))
+	mux.HandleFunc("GET /configs/values", sec.read(classReadEnvRows, http.HandlerFunc(h.ListMicroserviceConfigs)))
+	mux.HandleFunc("GET /configs/values/{id}", sec.read(classReadEnvRows, http.HandlerFunc(h.GetMicroserviceConfig)))
 	mux.HandleFunc("POST /configs/values", sec.guard(classEnvBody, "microconfig", h.CreateMicroserviceConfig))
 	mux.HandleFunc("DELETE /configs/values/{id}", sec.guard(classRowMicroConfig, "microconfig", h.DeleteMicroserviceConfig))
 	mux.HandleFunc("PUT /configs/values", sec.guard(classRowMicroConfig, "microconfig", h.UpdateMicroserviceConfig))
 
 	// feature flags. A flag definition carries no environment, but deleting one
 	// removes its values in every environment.
-	mux.HandleFunc("GET /flags", fh.ListFlags)
-	mux.HandleFunc("GET /flags/{id}", fh.GetFlagsByID)
+	mux.HandleFunc("GET /flags", sec.read(classReadNeutral, http.HandlerFunc(fh.ListFlags)))
+	mux.HandleFunc("GET /flags/{id}", sec.read(classReadNeutral, http.HandlerFunc(fh.GetFlagsByID)))
 	mux.HandleFunc("POST /flags", sec.guard(classNeutral, "flags", fh.CreateFlag))
 	mux.HandleFunc("DELETE /flags/{id}", sec.guard(classGlobal, "flags", fh.DeleteFlag))
 
-	mux.HandleFunc("GET /flags/values", fh.ListFlagValues)
-	mux.HandleFunc("GET /flags/values/{id}", fh.GetFlagsValueByID)
+	mux.HandleFunc("GET /flags/values", sec.read(classReadEnvRows, http.HandlerFunc(fh.ListFlagValues)))
+	mux.HandleFunc("GET /flags/values/{id}", sec.read(classReadEnvRows, http.HandlerFunc(fh.GetFlagsValueByID)))
 	mux.HandleFunc("POST /flags/values", sec.guard(classEnvBody, "flagvalues", fh.CreateFlagValue))
 	mux.HandleFunc("DELETE /flags/values/{id}", sec.guard(classRowFlagValue, "flagvalues", fh.DeleteFlagValue))
 	mux.HandleFunc("PUT /flags/values", sec.guard(classRowFlagValue, "flagvalues", fh.UpdateFlagValue))
 
 	// localization
-	mux.HandleFunc("GET /localization", lh.ListLocalizations)
-	mux.HandleFunc("GET /localization/{id}", lh.GetLocalizationByID)
-	mux.HandleFunc("GET /localization/lookup/{msId}/{envId}/{locale}", lh.GetLocalization)
+	mux.HandleFunc("GET /localization", sec.read(classReadEnvRows, http.HandlerFunc(lh.ListLocalizations)))
+	mux.HandleFunc("GET /localization/{id}", sec.read(classReadEnvRows, http.HandlerFunc(lh.GetLocalizationByID)))
+	mux.HandleFunc("GET /localization/lookup/{msId}/{envId}/{locale}", sec.read(classReadEnvRows, http.HandlerFunc(lh.GetLocalization)))
 	mux.HandleFunc("POST /localization", sec.guard(classEnvBody, "localization", lh.CreateLocalization))
 	mux.HandleFunc("DELETE /localization/{id}", sec.guard(classRowLocalization, "localization", lh.DeleteLocalization))
 	mux.HandleFunc("PUT /localization/values", sec.guard(classRowLocalization, "localization", lh.UpdateLocalization))

@@ -34,12 +34,20 @@ type Entry struct {
 }
 
 // Filter narrows the audit listing. A zero From/To is an open end of the range.
+//
+// Environments is the reader's own scope rather than a query parameter: a nil
+// slice is full scope, and any other value restricts the listing to rows
+// recorded against those environments. A row whose environment is unknown —
+// the 404 and 401 envelopes, and the writes that belong to no environment — is
+// outside every narrowed scope, because its body is the one thing about it that
+// is not already known.
 type Filter struct {
-	Actor  string
-	From   time.Time
-	To     time.Time
-	Limit  int
-	Offset int
+	Actor        string
+	From         time.Time
+	To           time.Time
+	Environments []int64
+	Limit        int
+	Offset       int
 }
 
 // MaxStoredBody bounds the recorded body. It is a byte budget rather than a
@@ -56,9 +64,24 @@ const (
 // table. A settings tree is free-form JSON, so nothing stops a field from being
 // named "password" or "token", and the audit log is read by more people than
 // the write API is used by.
+//
+// The match is a case-insensitive substring, so both the camelCase and the
+// snake_case spelling of a compound name has to be listed: "connectionString"
+// contains "connectionstring" but "connection_string" does not.
+//
+// This stays a deny list rather than an allow list of storable fields. The
+// bodies recorded here are appsettings trees and translation bundles whose keys
+// are defined by the consuming services, not by this schema; an allow list
+// would have nothing to enumerate and would reduce every recorded body to its
+// envelope, which is the part the other audit columns already carry. The trail
+// exists to show what an operator actually sent.
 var sensitiveKeys = []string{
 	"password", "passwd", "pwd", "secret", "token",
 	"apikey", "api_key", "credential", "privatekey", "private_key",
+	"authorization", "connectionstring", "connection_string",
+	"connstring", "conn_string", "dsn",
+	"signingkey", "signing_key", "cert", "pem",
+	"sessionid", "session_id",
 }
 
 // Redact prepares a request body for storage: secret-looking values are masked

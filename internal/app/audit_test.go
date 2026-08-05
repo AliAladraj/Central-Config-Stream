@@ -31,11 +31,15 @@ func (f *fakeRecorder) all() []audit.Entry {
 	return append([]audit.Entry(nil), f.entries...)
 }
 
+// routedEverywhere stands in for the mux's own answer in the tests that drive a
+// single handler rather than the router.
+func routedEverywhere(*http.Request) bool { return true }
+
 func TestAuditRecordsWritesAndNotReads(t *testing.T) {
 	rec := &fakeRecorder{}
 	sec := &security{tokens: mustTokens(t, "alice:*:secret", "")}
 	guarded := sec.guard(classEnvBody, "flagvalues", okHandler)
-	handler := auditWrites(rec, guarded)
+	handler := auditWrites(rec, routedEverywhere, guarded)
 
 	req := httptest.NewRequest(http.MethodPost, "/flags/values",
 		strings.NewReader(`{"environmentId":3,"flagId":7,"wsPassword":"hunter2"}`))
@@ -72,7 +76,7 @@ func TestAuditRecordsWritesAndNotReads(t *testing.T) {
 func TestAuditRecordsRejectedWrites(t *testing.T) {
 	rec := &fakeRecorder{}
 	sec := &security{tokens: mustTokens(t, "ci-dev:1|2:devsecret", "")}
-	handler := auditWrites(rec, sec.guard(classEnvBody, "flagvalues", okHandler))
+	handler := auditWrites(rec, routedEverywhere, sec.guard(classEnvBody, "flagvalues", okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/flags/values",
 		strings.NewReader(`{"environmentId":3,"flagId":7}`))
@@ -89,12 +93,98 @@ func TestAuditRecordsRejectedWrites(t *testing.T) {
 	}
 }
 
+// A write addressed at no route changes nothing, so recording it buys nothing
+// and costs a megabyte of body read, a full JSON walk and a synchronous insert
+// — an unauthenticated way to flood the audit table and drown the real trail.
+func TestAuditSkipsRequestsThatMatchNoRoute(t *testing.T) {
+	rec := &fakeRecorder{}
+	sec := &security{tokens: mustTokens(t, "", "secret")}
+
+	routes := map[string]bool{"/flags": true}
+	routed := func(r *http.Request) bool { return routes[r.URL.Path] }
+	handler := auditWrites(rec, routed, sec.guard(classNeutral, "flags", okHandler))
+
+	// A body big enough that buffering it would be the point of the flood.
+	body := `{"padding":"` + strings.Repeat("x", 4096) + `"}`
+
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/no-such-route", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if got := len(rec.all()); got != 0 {
+		t.Fatalf("%d unrouted writes were recorded", got)
+	}
+
+	// A real route is still always recorded, whatever it answers.
+	req := httptest.NewRequest(http.MethodPost, "/flags", strings.NewReader(`{"flagKey":"x"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	rejected := httptest.NewRequest(http.MethodPost, "/flags", strings.NewReader(`{"flagKey":"x"}`))
+	rejected.Header.Set("Authorization", "Bearer wrong")
+	handler.ServeHTTP(httptest.NewRecorder(), rejected)
+
+	entries := rec.all()
+	if len(entries) != 2 {
+		t.Fatalf("got %d records for two routed writes, want 2", len(entries))
+	}
+	if entries[0].StatusCode != http.StatusOK || entries[1].StatusCode != http.StatusUnauthorized {
+		t.Errorf("routed writes recorded as %d and %d", entries[0].StatusCode, entries[1].StatusCode)
+	}
+}
+
+// The same property through the real router and the real store: a POST to a
+// path nothing serves leaves no row behind.
+func TestUnroutedWritesLeaveNoAuditRow(t *testing.T) {
+	api, db := newTestAPI(t, "", "test-token")
+
+	post := func(path, token string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, api.URL+path, strings.NewReader(`{"flagKey":"probe"}`))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := api.Client().Do(req)
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow("SELECT COUNT(*) FROM CONFIG_AUDIT_LOG").Scan(&n); err != nil {
+			t.Fatalf("count audit rows: %v", err)
+		}
+		return n
+	}
+
+	for _, path := range []string{"/no-such-route", "/flags/values/../../etc", "/"} {
+		post(path, "test-token")
+	}
+	if got := count(); got != 0 {
+		t.Fatalf("%d audit rows written by requests matching no route", got)
+	}
+
+	if status := post("/flags", "test-token"); status != http.StatusCreated {
+		t.Fatalf("POST /flags = %d, want 201", status)
+	}
+	if got := count(); got != 1 {
+		t.Errorf("a routed write produced %d audit rows, want 1", got)
+	}
+}
+
 // The audit write happens after the change is already committed and published,
 // so a failing audit store must not turn a successful change into an error.
 func TestAuditFailureDoesNotFailRequest(t *testing.T) {
 	rec := &fakeRecorder{err: errors.New("audit table unavailable")}
 	sec := &security{tokens: mustTokens(t, "", "secret")}
-	handler := auditWrites(rec, sec.guard(classNeutral, "flags", okHandler))
+	handler := auditWrites(rec, routedEverywhere, sec.guard(classNeutral, "flags", okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/flags", strings.NewReader(`{"flagKey":"x"}`))
 	req.Header.Set("Authorization", "Bearer secret")

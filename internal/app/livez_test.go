@@ -133,7 +133,12 @@ func TestAppBootsWithNATSDown(t *testing.T) {
 	}
 
 	// And the reads that need nothing from KV keep working.
-	flags, err := http.Get(api.URL + "/flags/values")
+	flagsReq, err := http.NewRequest(http.MethodGet, api.URL+"/flags/values", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	flagsReq.Header.Set("Authorization", "Bearer test-token")
+	flags, err := http.DefaultClient.Do(flagsReq)
 	if err != nil {
 		t.Fatalf("get /flags/values: %v", err)
 	}

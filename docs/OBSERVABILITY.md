@@ -68,8 +68,15 @@ logs nothing you can act on.
 
 The reconciler can republish thousands of keys in a sweep, so per-key lines are
 `debug` and the `info` lines carry counts (`source republished` with `count`,
-`pruned stale keys` with `count`). `GET /health` and `GET /metrics` access lines
-are `debug` too — an orchestrator probe every few seconds would otherwise be
+`pruned stale keys` with `count`). The two exceptions are logged at `error` and
+name what went wrong: a key that would not publish (`republish key failed`, with
+`kv.key`), and a prune the ceiling refused (`refusing to prune: too much of the
+bucket has no row behind it`, with `bucket`, `stale`, `keys` and `limit`). A
+sweep that reports a whole domain by name leaves an operator a domain to search;
+these leave a key.
+
+`GET /health`, `GET /livez` and `GET /metrics` access lines are `debug` — an
+orchestrator probing every few seconds, on two endpoints, would otherwise be
 most of the log volume.
 
 ### Environment variables
@@ -122,10 +129,11 @@ Two things to keep in mind:
 
 ## 2. Metrics
 
-`GET /metrics`, Prometheus text exposition format, unauthenticated like
-`/health` (it carries counters, never configuration values). Backed by `expvar`
-with a small renderer in `internal/obs/metrics.go`; the metric definitions are
-in `internal/obs/instruments.go`.
+`GET /metrics`, Prometheus text exposition format. It is one of the three open
+routes — with `GET /health` and `GET /livez` — because it carries counters,
+never configuration values; everything else on the API needs a bearer token.
+Backed by `expvar` with a small renderer in `internal/obs/metrics.go`; the
+metric definitions are in `internal/obs/instruments.go`.
 
 ### KV distribution
 
@@ -136,6 +144,14 @@ in `internal/obs/instruments.go`.
 | `centralconfig_kv_publish_failures_total` | `bucket` | publishes that failed — the admin write still succeeded, so this is invisible to the caller and to Oracle |
 | `centralconfig_kv_publish_skipped_total` | `bucket` | publishes skipped because KV already held a byte-identical value — in steady state a full sweep should be almost entirely skips, since every real write pushes to every consumer |
 | `centralconfig_kv_delete_failures_total` | `bucket` | key deletions that failed, i.e. a deleted row still being served to consumers |
+| `centralconfig_nats_up` | — | `1` when the KV buckets are provisioned and NATS is connected, `0` otherwise |
+
+`centralconfig_nats_up` exists because a NATS outage no longer stops the service
+booting. The process starts, serves reads from the database and publishes
+nothing; without a gauge, that degraded start is visible only in one log line at
+startup and then never again. It is set when the buckets are provisioned or fail
+to be, and refreshed on every `/health` call — so like `centralconfig_db_up` it
+tracks reality only as often as something probes readiness.
 
 ### Reconciler
 
@@ -145,16 +161,30 @@ in `internal/obs/instruments.go`.
 | `centralconfig_reconcile_duration_seconds` | `sweep` | histogram of cycle wall time |
 | `centralconfig_reconcile_keys_republished_total` | `source` | keys pushed back to KV |
 | `centralconfig_reconcile_keys_pruned_total` | `bucket` | KV keys deleted because their database row is gone — this is measured drift |
-| `centralconfig_reconcile_source_failures_total` | `source` | a source could not be read or republished |
+| `centralconfig_reconcile_prune_refused_total` | `bucket` | prune passes refused because they would have deleted more of a bucket than the ceiling allows |
+| `centralconfig_reconcile_source_failures_total` | `source` | a source could not be read or republished — including a sweep that completed with some keys unpublished |
 | `centralconfig_reconcile_last_success_timestamp_seconds` | — | unix time of the last cycle where every source succeeded; stays `0` when `PUBLISH_ENABLED=false`, because no reconciler runs |
 
 ### HTTP
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
-| `centralconfig_http_requests_total` | `method`, `route`, `status` | `route` is the matched `ServeMux` pattern (`PUT /flags/values`), or `other` for an unmatched path, so a path scanner cannot blow up cardinality |
+| `centralconfig_http_requests_total` | `method`, `route`, `status` | `route` is the matched `ServeMux` pattern (`PUT /flags/values`), or `other` for an unmatched path |
 | `centralconfig_http_request_duration_seconds` | `method`, `route` | histogram, seconds |
 | `centralconfig_http_panics_total` | `route` | recovered handler panics |
+
+**Both labels are bounded on purpose, and each was a way to grow the process's
+memory from outside it.** A metric label allocates a series that lives as long
+as the process, and both parts of a request line are caller input:
+
+- `route` is resolved by asking the mux which pattern the request matched, so
+  the label set is bounded by the routing table. An unmatched path is `other`,
+  which is why a path scanner shows up as one series rather than thousands.
+- `method` is checked against the nine HTTP verbs and anything else becomes
+  `other`. Without that, `curl -X <anything>` against an open route — `/health`
+  or `/metrics`, neither of which needs a token — is unauthenticated,
+  unrate-limited memory growth, and a `/metrics` body that keeps getting slower
+  to scrape.
 
 ### Database
 
@@ -163,9 +193,11 @@ in `internal/obs/instruments.go`.
 | `centralconfig_db_up` | 1/0 from the last `/health` ping (Oracle in production, SQLite in the local stack) |
 | `centralconfig_db_ping_failures_total` | failed health-check pings |
 
-Note that `centralconfig_db_up` only moves when `/health` is called, which in
-Kubernetes is the liveness probe. If nothing probes the service, it does not
-refresh.
+Note that `centralconfig_db_up` — and `centralconfig_nats_up` with it — only
+moves when `/health` is called, which in Kubernetes is the **readiness** probe.
+If nothing probes the service, neither gauge refreshes. `/livez` deliberately
+touches no dependency and so updates nothing: it answers `{"status":"alive"}`
+for the process alone, which is the whole point of having it separate.
 
 ### Scraping
 
@@ -177,7 +209,7 @@ point the scraper at `http://<host>:8080/metrics`.
 
 ## 3. Alerts worth having
 
-Three, in order of what they would actually catch.
+Five, in order of what they would actually catch.
 
 **1. KV publishes are failing — consumers are drifting from Oracle.**
 
@@ -214,6 +246,33 @@ A prune means a KV key outlived its database row: the delete-time purge did not
 happen. One after a genuine deletion outage is fine; a steady trickle means the
 write-through delete path is broken and consumers are being served rows that no
 longer exist. Warning severity, not a page.
+
+**4. A prune was refused.**
+
+```promql
+sum(increase(centralconfig_reconcile_prune_refused_total[1h])) > 0
+```
+
+Alert on the first occurrence. A refusal means a full sweep proposed deleting
+more than `RECONCILE_PRUNE_MAX_FRACTION` of a bucket — the database and KV
+disagree wholesale, which is what a truncated table or a connection string
+pointed at an empty database looks like from here. The ceiling has already
+stopped the deletion, so nothing is on fire; what is on fire is whatever made
+the sweep believe those rows were gone. The error line names the bucket, how
+many keys were stale, and the limit.
+
+**5. The distribution plane is down.**
+
+```promql
+centralconfig_nats_up == 0
+for: 5m
+```
+
+The service now boots and serves reads with NATS unreachable, which is the right
+behaviour and also means the failure is quiet: admin writes keep returning `200`
+and consumers keep serving whatever they last cached. Scope this to instances
+with `PUBLISH_ENABLED=true`, and remember the gauge only refreshes when
+readiness is probed.
 
 Worth graphing but not alerting: `centralconfig_http_request_duration_seconds`
 p95 by route (Oracle latency shows up here first), and

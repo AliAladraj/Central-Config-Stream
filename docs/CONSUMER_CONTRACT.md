@@ -73,7 +73,7 @@ services' settings is something to avoid deliberately.
 `enabled` is the on/off answer. `value` is a free-form string used for things
 like rollout percentages or variant names; parse it yourself when a flag carries
 more than on/off. `updatedAt` is RFC 3339 and is useful for the ordering guard
-in §4.
+in §3.
 
 `MICROCONFIG` is **the entire appsettings tree as one JSON document** — not one
 key per setting. One push replaces the whole document atomically, so a consumer
@@ -89,6 +89,27 @@ control plane treats it as opaque JSON.
 Buckets keep five historical values per key, which is the available rollback
 depth on the KV side.
 
+### A value is at most 512 KiB
+
+The buckets are provisioned with an explicit 512 KiB ceiling per value, and the
+control plane refuses an oversized appsettings tree or translation bundle with a
+`400` before the row is written. The two limits are the same constant on
+purpose: a payload accepted by the admin API but refused by JetStream would be
+drift no reconcile sweep could ever heal, failing on the same row every cycle.
+
+What this means for you:
+
+- **Do not design a consumer around one enormous document.** An appsettings tree
+  is one key and is replaced whole; if yours is approaching a few hundred
+  kilobytes, split the service or move the bulk out of configuration.
+- **Translation bundles are per locale**, not per service, so the ceiling
+  applies to each locale separately. That is usually the constraint that saves
+  you.
+- If a bucket was provisioned before this ceiling existed, it inherits the
+  server's `max_payload` instead. Check with `nats kv info <BUCKET>`;
+  central-config re-applies the configuration on every startup and on every
+  reconcile cycle, so restarting the control plane is enough to correct it.
+
 ## 3. What to build
 
 One component that owns the NATS connection and exposes a typed, always-current
@@ -101,7 +122,7 @@ snapshot to the rest of the application.
 
 2. **Watch the prefixes from §2**, one watcher per bucket you actually use.
 
-3. **Deserialize on push, not on read.** Parse inside the watch callback, build
+3. **Deserialise on push, not on read.** Parse inside the watch callback, build
    whatever immutable structure your language offers, and swap a single
    reference to it. A read from application code should be a field access, never
    a JSON parse. If your language has no atomic reference swap, use the smallest
@@ -176,10 +197,58 @@ let the orchestrator retry; a service that comes up "healthy" with no config is
 worse than one that visibly refuses to start.
 
 If you need a cold start to survive a NATS outage and defaults are not enough,
-the control plane's read endpoints (`GET /flags/values`, `GET /configs/values`,
-`GET /localization`) can hydrate the cache once at startup over HTTP. Treat that
-strictly as a bootstrap path: one call, at start, never on the request path.
-`pkg/configclient` implements exactly this and keeps it off by default.
+the control plane's read endpoints can hydrate the cache once at startup over
+HTTP. Treat that strictly as a bootstrap path: one pass, at start, never on the
+request path. `pkg/configclient` implements exactly this and keeps it off by
+default.
+
+**The bootstrap path needs a bearer token.** The admin API authenticates every
+route except `GET /health`, `GET /livez` and `GET /metrics`, reads included, and
+a token's environment scope narrows what it may read as well as what it may
+write. So a consumer that wants this fallback needs a credential of its own,
+scoped to its environment — which is a real cost, and the reason the fallback
+stays optional rather than becoming the default answer to a cold start.
+
+In `pkg/configclient` that is `HTTPFallback.Token`. It is validated in `New`,
+whether or not the fallback is ever reached, so a missing credential fails at
+boot in dev and in CI rather than months later with KV already down and a `401`
+as the only clue. `AllowUnauthenticated` exists for a control plane running with
+auth switched off, which is a dev-only mode it warns about at startup; setting
+it anywhere else just converts a boot-time configuration error into a runtime
+one on the worst possible day.
+
+Three status codes are worth telling apart if you are writing your own client,
+because none of them means "there is no configuration":
+
+| status | what it means | what to do |
+|---|---|---|
+| `401` | the control plane does not accept this token | fix the credential |
+| `403` | the token is accepted but not permitted here | get one whose scope lists your environment |
+| `404` | **either** no such row **or** the token is not scoped to your environment | check the scope before concluding the row is gone |
+
+That `404` is deliberate: answering `403` for an out-of-scope row would confirm
+the row exists. It is also the one that will waste your afternoon, so handle a
+`404` during bootstrap by reporting both possibilities.
+
+A credential refused on any endpoint should fail the whole hydration pass rather
+than being retried — it is not the kind of failure that gets better while the
+process runs. A single endpoint being unwell should not; a partial cold start is
+better than none. `configclient` splits it exactly that way.
+
+Which endpoints a bootstrap can actually use is limited by their keys. KV is
+keyed the way a consumer thinks — flag key, microservice, locale — but two of
+the three read endpoints are keyed by database row id:
+
+```
+GET /localization/lookup/{msId}/{envId}/{locale}   reachable from what you know
+GET /configs/values/{id}    {id} is the appsettings row id, not the service id
+GET /flags/values/{id}      {id} is the flag-value row id, not the flag key
+```
+
+So a consumer that wants to hydrate flags or appsettings has to be told those
+row ids as deployment configuration — `GET /inventory` is where an operator
+finds them. There is no "list flag values for environment X" endpoint, so there
+is no way around it on the client side.
 
 ## 5. Secrets — the `env:VAR_NAME` convention
 
@@ -188,7 +257,8 @@ strictly as a bootstrap path: one call, at start, never on the request path.
 Anyone holding NATS credentials can read every key they are permitted to
 subscribe to, and every consumer caches what it reads in plaintext process
 memory. KV has no field-level encryption. Unless you have configured per-service
-NATS permissions (see `SECURITY.md`), a single shared credential means every
+NATS permissions (see [`docs/SECURITY.md`](SECURITY.md)), a single shared
+credential means every
 consumer can read every other service's appsettings.
 
 The convention, which the seeded example data demonstrates: secret-shaped fields
@@ -263,7 +333,7 @@ Five that are easy to get wrong regardless of the language you are writing in.
   with.
 
 - **Pin your NATS client version and check the API against that version.**
-  JetStream KV is younger than core NATS, and the watch and serialization
+  JetStream KV is younger than core NATS, and the watch and serialisation
   surfaces have changed between minor releases in several client libraries. Pin
   the version, read that version's own documentation, and do not trust a sample
   written against an older one.
@@ -281,6 +351,8 @@ docker compose -f deploy/compose/docker-compose.yml up --build
 ```
 
 Point your service at `nats://localhost:4222` with environment id `1` (`dev`).
+The stack's admin token is `local-dev-token`, full scope — that is what to give
+a bootstrap fallback you want to exercise locally.
 Seeded there: flags `search_v2`, `dark_mode` and `new_pricing`; appsettings for
 three services, ids `1`, `2` and `3`; and `en-US` / `pt-BR` localization bundles
 for service `1`. Service `1` (`catalog-api`) carries the full example appsettings
@@ -314,3 +386,6 @@ passes 1, 2 and 6 but not 5 will look perfect until the first NATS restart.
 - Deletes remove keys rather than blanking them.
 - No secret value appears in any KV key, log line, or exception message.
 - Only this service's own `MICROCONFIG` key is watched, not the whole bucket.
+- No appsettings tree or bundle is anywhere near 512 KiB.
+- If an HTTP bootstrap fallback is configured, it carries a bearer token scoped
+  to this environment, is validated at start, and runs once — never on a read.

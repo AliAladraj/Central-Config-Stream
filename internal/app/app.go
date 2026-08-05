@@ -99,6 +99,12 @@ func NewApp(cfg *Config) (*App, error) {
 	router := NewRouter(microHandler, flagsHandler, locHandler, sec,
 		app.healthHandler(), inventory, audit.NewHandler(auditStore))
 
+	// Liveness is deliberately not part of the router's own table: /health is
+	// readiness and answers for the dependencies, /livez answers only for the
+	// process. Registering it here keeps the two from ever being confused for
+	// one another.
+	router.HandleFunc("GET /livez", livezHandler)
+
 	// The metric label for a request is the route it matched, which only the
 	// mux knows; asking it keeps the label bounded by the routing table rather
 	// than by whatever paths get probed.
@@ -187,6 +193,12 @@ func newRepositories(cfg *Config, db *sql.DB) (flagsRepository, microRepository,
 		localization.NewOracleRepository(db)
 }
 
+// setupMessaging connects to NATS and provisions the KV buckets. A URL that
+// cannot be parsed is a configuration error and stops the process; NATS being
+// unreachable is not. The read paths of the admin API need nothing from KV, and
+// turning a flag off is exactly what an operator reaches for while the
+// distribution plane is down — crash-looping every pod removes that. The
+// buckets come up on their own: the reconciler re-ensures them every cycle.
 func setupMessaging(cfg *Config) (*messaging.Client, *messaging.Buckets, error) {
 	client, err := messaging.Connect(messaging.Config{
 		URL:       cfg.NATSURL,
@@ -200,13 +212,17 @@ func setupMessaging(cfg *Config) (*messaging.Client, *messaging.Buckets, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	buckets, err := messaging.EnsureBuckets(ctx, client.JS, messaging.BucketOptions{
+	buckets := messaging.NewBuckets(client.JS, messaging.BucketOptions{
 		Replicas: cfg.NATSReplicas,
 	})
-	if err != nil {
-		_ = client.Drain()
-		return nil, nil, fmt.Errorf("ensure buckets: %w", err)
+	if err := buckets.Ensure(ctx); err != nil {
+		obs.NATSUp.SetBool(false)
+		appLog.Error("KV buckets unavailable, starting without distribution",
+			slog.String("nats.url", cfg.NATSURL), obs.Err(err))
+		return client, buckets, nil
 	}
+
+	obs.NATSUp.SetBool(true)
 	return client, buckets, nil
 }
 
@@ -239,6 +255,9 @@ func (a *App) healthHandler() http.HandlerFunc {
 		default:
 			natsState = "disconnected"
 		}
+		if a.nats != nil {
+			obs.NATSUp.SetBool(natsState == "connected")
+		}
 
 		healthy := dbState == "ok" && natsState != "disconnected"
 		status := http.StatusOK
@@ -254,6 +273,17 @@ func (a *App) healthHandler() http.HandlerFunc {
 			"nats":     natsState,
 		})
 	}
+}
+
+// livezHandler answers only "this process is running". Liveness must not depend
+// on the database or NATS: an outage in either is a reason to stop taking
+// traffic, which is what /health is for, not a reason for the orchestrator to
+// kill every pod — that takes the admin API's read paths down as well, exactly
+// when an operator needs them to see and change configuration.
+func livezHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"alive"}` + "\n"))
 }
 
 // ---- Reconcile source adapters (bridge Oracle repos to messaging.ReconcileSource) ----
@@ -276,47 +306,47 @@ type locLister interface {
 }
 
 // Each source also reports the bucket it owns and the keys it published, so the
-// reconciler's full sweep can delete KV keys whose row is gone.
+// reconciler's full sweep can delete KV keys whose row is gone. A row that will
+// not publish is recorded on the result and the sweep carries on: returning
+// early would leave every row behind it unpublished, and — because the sweep
+// then neither prunes nor advances its window — would do so again on every
+// cycle from then on.
 
 type flagsReconcileSource struct{ repo flagsLister }
 
 func (s *flagsReconcileSource) Name() string   { return "flags" }
 func (s *flagsReconcileSource) Bucket() string { return messaging.BucketFlags }
-func (s *flagsReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) ([]string, error) {
+func (s *flagsReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) (messaging.ResyncResult, error) {
 	rows, err := s.repo.ListAllForReconcile(ctx, since)
 	if err != nil {
-		return nil, err
+		return messaging.ResyncResult{}, err
 	}
-	keys := make([]string, 0, len(rows))
+	res := messaging.ResyncResult{Keys: make([]string, 0, len(rows))}
 	for _, row := range rows {
-		if err := pub.PublishFlag(ctx, row.EnvironmentID, row.FlagKey, messaging.FlagPayload{
-			Enabled: row.Enabled != 0,
-			Value:   row.Value,
-		}); err != nil {
-			return keys, err
-		}
-		keys = append(keys, messaging.FlagKey(row.EnvironmentID, row.FlagKey))
+		res.Publish(s.Name(), messaging.FlagKey(row.EnvironmentID, row.FlagKey),
+			pub.PublishFlag(ctx, row.EnvironmentID, row.FlagKey, messaging.FlagPayload{
+				Enabled: row.Enabled != 0,
+				Value:   row.Value,
+			}))
 	}
-	return keys, nil
+	return res, nil
 }
 
 type microReconcileSource struct{ repo microLister }
 
 func (s *microReconcileSource) Name() string   { return "microconfig" }
 func (s *microReconcileSource) Bucket() string { return messaging.BucketMicroConfig }
-func (s *microReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) ([]string, error) {
+func (s *microReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) (messaging.ResyncResult, error) {
 	rows, err := s.repo.ListAllForReconcile(ctx, since)
 	if err != nil {
-		return nil, err
+		return messaging.ResyncResult{}, err
 	}
-	keys := make([]string, 0, len(rows))
+	res := messaging.ResyncResult{Keys: make([]string, 0, len(rows))}
 	for _, row := range rows {
-		if err := pub.PublishMicroConfig(ctx, row.EnvironmentID, row.MicroserviceID, row.SettingsJSON); err != nil {
-			return keys, err
-		}
-		keys = append(keys, messaging.MicroKey(row.EnvironmentID, row.MicroserviceID))
+		res.Publish(s.Name(), messaging.MicroKey(row.EnvironmentID, row.MicroserviceID),
+			pub.PublishMicroConfig(ctx, row.EnvironmentID, row.MicroserviceID, row.SettingsJSON))
 	}
-	return keys, nil
+	return res, nil
 }
 
 type locReconcileSource struct {
@@ -325,17 +355,15 @@ type locReconcileSource struct {
 
 func (s *locReconcileSource) Name() string   { return "localization" }
 func (s *locReconcileSource) Bucket() string { return messaging.BucketLocalization }
-func (s *locReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) ([]string, error) {
+func (s *locReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) (messaging.ResyncResult, error) {
 	rows, err := s.repo.ListAllForReconcile(ctx, since)
 	if err != nil {
-		return nil, err
+		return messaging.ResyncResult{}, err
 	}
-	keys := make([]string, 0, len(rows))
+	res := messaging.ResyncResult{Keys: make([]string, 0, len(rows))}
 	for _, row := range rows {
-		if err := pub.PublishLocalization(ctx, row.EnvironmentID, row.MicroserviceID, row.Locale, row.BundleJSON); err != nil {
-			return keys, err
-		}
-		keys = append(keys, messaging.LocalizationKey(row.EnvironmentID, row.MicroserviceID, row.Locale))
+		res.Publish(s.Name(), messaging.LocalizationKey(row.EnvironmentID, row.MicroserviceID, row.Locale),
+			pub.PublishLocalization(ctx, row.EnvironmentID, row.MicroserviceID, row.Locale, row.BundleJSON))
 	}
-	return keys, nil
+	return res, nil
 }

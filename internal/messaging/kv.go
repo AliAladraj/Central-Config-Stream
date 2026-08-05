@@ -2,11 +2,25 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// MaxValueSize bounds a single KV value. Left unset a bucket inherits the
+// server's max_payload (1 MB by default), so a payload the admin API accepted
+// with a 201 could be refused by JetStream forever afterwards — drift the
+// reconciler can never heal because every sweep fails on the same row. The
+// domain services refuse anything larger before the database write, which is
+// why this number and the one they check against have to be the same one.
+const MaxValueSize = 512 << 10 // 512 KiB
+
+// ErrNotProvisioned is returned by a publish attempted before the buckets
+// exist: NATS was unreachable at startup and Ensure has not yet succeeded.
+// Distinct so a caller can tell it apart from a rejected value.
+var ErrNotProvisioned = errors.New("messaging: KV buckets are not provisioned")
 
 // Buckets holds the three KV stores this service publishes to. Handles are
 // swapped in place by Ensure, so every read goes through the mutex.
@@ -67,6 +81,14 @@ func EnsureBuckets(ctx context.Context, js jetstream.JetStream, opts BucketOptio
 	}, nil
 }
 
+// NewBuckets returns a Buckets whose handles are not provisioned yet. It is
+// what makes a NATS outage at startup non-fatal: every publish fails cleanly
+// against it while the database-backed read paths carry on serving, and the
+// reconciler's per-cycle Ensure fills the handles in as soon as NATS is back.
+func NewBuckets(js jetstream.JetStream, opts BucketOptions) *Buckets {
+	return &Buckets{js: js, opts: opts.withDefaults()}
+}
+
 // Ensure re-provisions the buckets and swaps in the fresh handles. It exists so
 // the service heals itself when NATS comes back with an empty store: startup
 // provisioning alone would leave every publish failing forever. Idempotent and
@@ -89,24 +111,30 @@ func (b *Buckets) byName(name string) (jetstream.KeyValue, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
+	var kv jetstream.KeyValue
 	switch name {
 	case BucketFlags:
-		return b.flags, nil
+		kv = b.flags
 	case BucketMicroConfig:
-		return b.microConfig, nil
+		kv = b.microConfig
 	case BucketLocalization:
-		return b.localization, nil
+		kv = b.localization
 	default:
 		return nil, fmt.Errorf("messaging: unknown bucket %q", name)
 	}
+	if kv == nil {
+		return nil, fmt.Errorf("%w: %s", ErrNotProvisioned, name)
+	}
+	return kv, nil
 }
 
 func ensureBucket(ctx context.Context, js jetstream.JetStream, name string, opts BucketOptions) (jetstream.KeyValue, error) {
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:   name,
-		History:  opts.History,
-		Storage:  jetstream.FileStorage,
-		Replicas: opts.Replicas,
+		Bucket:       name,
+		History:      opts.History,
+		Storage:      jetstream.FileStorage,
+		Replicas:     opts.Replicas,
+		MaxValueSize: MaxValueSize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("messaging: ensure bucket %s: %w", name, err)

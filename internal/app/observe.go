@@ -68,12 +68,13 @@ func observe(routeOf func(*http.Request) string, next http.Handler) http.Handler
 // metrics scrapes are logged at debug: an orchestrator probing every few
 // seconds would otherwise be most of the log volume.
 func record(r *http.Request, route string, status int, elapsed time.Duration) {
-	obs.HTTPRequests.Inc("method", r.Method, "route", route, "status", strconv.Itoa(status))
-	obs.HTTPDuration.Observe(elapsed.Seconds(), "method", r.Method, "route", route)
+	method := methodLabel(r.Method)
+	obs.HTTPRequests.Inc("method", method, "route", route, "status", strconv.Itoa(status))
+	obs.HTTPDuration.Observe(elapsed.Seconds(), "method", method, "route", route)
 
 	level := slog.LevelInfo
 	switch {
-	case route == "GET /health" || route == "GET /metrics":
+	case route == "GET /health" || route == "GET /livez" || route == "GET /metrics":
 		level = slog.LevelDebug
 	case status >= http.StatusInternalServerError:
 		level = slog.LevelError
@@ -98,6 +99,22 @@ func record(r *http.Request, route string, status int, elapsed time.Duration) {
 		attrs = append(attrs, slog.String("user.name", sink.actor))
 	}
 	log.Log(r.Context(), level, "http request", attrs...)
+}
+
+// methodLabel bounds the method label to the verbs the API actually serves.
+// r.Method is caller input and a metric label allocates a series that lives as
+// long as the process, so `curl -X <anything>` on an open route is otherwise
+// unauthenticated, unrate-limited memory growth and a /metrics body that keeps
+// getting slower to scrape.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+		http.MethodConnect, http.MethodTrace:
+		return method
+	default:
+		return "other"
+	}
 }
 
 // logPanic records the failure with the stack that produced it. net/http's own

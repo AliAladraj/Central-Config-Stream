@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
 
 // sqliteTimeLayout is how SQLite's CURRENT_TIMESTAMP renders a UTC timestamp.
@@ -51,6 +53,13 @@ func (r *SQLiteRepository) GetLocalization(ctx context.Context, microserviceID, 
 }
 
 func (r *SQLiteRepository) UpdateLocalization(ctx context.Context, input Localization) (*Localization, error) {
+	// An update rewrites the natural key, so it needs the same referential and
+	// uniqueness checks a create gets: without them it can point at rows that
+	// do not exist, or collide with another row and surface as a 500.
+	if err := r.checkRefs(ctx, input); err != nil {
+		return nil, err
+	}
+
 	const query = `
 		UPDATE CONFIG_LOCALIZATION
 		SET MICROSERVICE_ID = ?,
@@ -74,6 +83,9 @@ func (r *SQLiteRepository) UpdateLocalization(ctx context.Context, input Localiz
 
 	result, err := r.db.ExecContext(ctx, stmt, args...)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrLocalizationExists
+		}
 		return nil, fmt.Errorf("update localization: %w", err)
 	}
 	rows, err := result.RowsAffected()
@@ -142,6 +154,11 @@ func (r *SQLiteRepository) CreateLocalization(ctx context.Context, input Localiz
 	`
 	if _, err := r.db.ExecContext(ctx, insert,
 		input.MicroserviceID, input.EnvironmentID, input.Locale, string(input.BundleJSON)); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, ErrLocalizationExists
+		}
 		return nil, fmt.Errorf("create localization: %w", err)
 	}
 
@@ -169,9 +186,13 @@ func (r *SQLiteRepository) checkRefs(ctx context.Context, input Localization) er
 		return ErrEnvironmentNotFound
 	}
 
+	// An update may legitimately keep the natural key it already holds, so the
+	// row being written is excluded; on a create input.ID is zero and excludes
+	// nothing.
 	taken, err := r.count(ctx,
-		`SELECT COUNT(*) FROM CONFIG_LOCALIZATION WHERE MICROSERVICE_ID = ? AND ENVIRONMENT_ID = ? AND LOCALE = ?`,
-		input.MicroserviceID, input.EnvironmentID, input.Locale)
+		`SELECT COUNT(*) FROM CONFIG_LOCALIZATION
+		 WHERE MICROSERVICE_ID = ? AND ENVIRONMENT_ID = ? AND LOCALE = ? AND ID <> ?`,
+		input.MicroserviceID, input.EnvironmentID, input.Locale, input.ID)
 	if err != nil {
 		return err
 	}
@@ -219,6 +240,9 @@ func (r *SQLiteRepository) ListAllForReconcile(ctx context.Context, since time.T
 		query += ` WHERE UPDATED_AT >= ?`
 		args = append(args, since.UTC().Format(sqliteTimeLayout))
 	}
+	// A deterministic order matters when the sweep cannot publish every row:
+	// which rows a stalled sweep got to has to be the same every cycle.
+	query += ` ORDER BY ID`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

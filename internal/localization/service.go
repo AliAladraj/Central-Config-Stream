@@ -52,11 +52,24 @@ func (s *Service) UpdateLocalization(ctx context.Context, req Localization) (*Lo
 	if req.EnvironmentID <= 0 {
 		return nil, ErrInvalidEnvironmentID
 	}
-	if req.Locale == "" {
+	// The same check a create runs. A locale that only an update let through
+	// still becomes a KV key, and one a consumer cannot parse is republished by
+	// every reconcile sweep from then on.
+	if !validLocale(req.Locale) {
 		return nil, ErrInvalidLocale
 	}
-	if !validBundle(req.BundleJSON) {
-		return nil, ErrInvalidBundleJSON
+	if err := checkBundle(req.BundleJSON); err != nil {
+		return nil, err
+	}
+
+	// An update may move the row to another (microservice, environment,
+	// locale), which is a different KV key. The one it used to feed is read
+	// before the write, because afterwards there is nothing left to derive it
+	// from — and leaving it behind means consumers of the old identity keep
+	// serving a bundle no row backs.
+	previous, err := s.repo.GetLocalizationByID(ctx, req.ID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 1. Oracle is the source of truth.
@@ -67,6 +80,7 @@ func (s *Service) UpdateLocalization(ctx context.Context, req Localization) (*Lo
 
 	// 2. Write-through to KV. Best-effort: reconciler heals drift on failure.
 	s.publish(ctx, updated)
+	s.purgeMoved(ctx, previous, updated)
 
 	return updated, nil
 }
@@ -86,8 +100,8 @@ func (s *Service) CreateLocalization(ctx context.Context, req Localization) (*Lo
 	if !validLocale(req.Locale) {
 		return nil, ErrInvalidLocale
 	}
-	if !validBundle(req.BundleJSON) {
-		return nil, ErrInvalidBundleJSON
+	if err := checkBundle(req.BundleJSON); err != nil {
+		return nil, err
 	}
 
 	// 1. Oracle is the source of truth.
@@ -136,15 +150,40 @@ func (s *Service) publish(ctx context.Context, l *Localization) {
 	}
 }
 
-// validBundle rejects anything a consumer cannot bind to its translation map. A
+// purgeMoved drops the KV key an update left behind when it moved the row to a
+// different (environment, microservice, locale). Nothing else removes it until
+// the next full reconcile sweep, and until then consumers watching the old key
+// keep the bundle they last saw.
+func (s *Service) purgeMoved(ctx context.Context, previous, updated *Localization) {
+	old := messaging.LocalizationKey(previous.EnvironmentID, previous.MicroserviceID, previous.Locale)
+	if old == messaging.LocalizationKey(updated.EnvironmentID, updated.MicroserviceID, updated.Locale) {
+		return
+	}
+	if err := s.pub.DeleteKey(ctx, messaging.BucketLocalization, old); err != nil {
+		obs.FromContext(ctx, "localization").Error("purge moved bundle failed (will reconcile)",
+			slog.String("kv.key", old), obs.Err(err))
+	}
+}
+
+// checkBundle rejects anything a consumer cannot bind to its translation map. A
 // top-level array or scalar is well-formed JSON but breaks every consumer's
 // deserialization at once, and KV would have published it happily.
-func validBundle(bundle json.RawMessage) bool {
-	if len(bundle) == 0 || !json.Valid(bundle) {
-		return false
+//
+// Size is checked here too, against the same ceiling the bucket is configured
+// with: the bundle is published verbatim as the KV value, so anything JetStream
+// would refuse has to be refused before the row exists, not accepted with a 201
+// and left failing at publish forever.
+func checkBundle(bundle json.RawMessage) error {
+	if len(bundle) > messaging.MaxValueSize {
+		return ErrBundleTooLarge
 	}
-	trimmed := bytes.TrimLeft(bundle, " \t\r\n")
-	return len(trimmed) > 0 && trimmed[0] == '{'
+	if len(bundle) == 0 || !json.Valid(bundle) {
+		return ErrInvalidBundleJSON
+	}
+	if trimmed := bytes.TrimLeft(bundle, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
+		return ErrInvalidBundleJSON
+	}
+	return nil
 }
 
 // validLocale accepts only what a KV key may contain, minus the dot: the

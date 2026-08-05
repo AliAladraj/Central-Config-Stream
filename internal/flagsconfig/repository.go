@@ -7,7 +7,18 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
+
+// sinceWindowUTC converts the bound reconcile window into the session time zone
+// before comparing it. UPDATED_AT is a plain TIMESTAMP written by
+// CURRENT_TIMESTAMP, so it carries the session's local wall clock, while the
+// bound value comes from a Go UTC clock — on a non-UTC session comparing them
+// directly matches the wrong rows, or none at all, and reports success either
+// way. Converting the bound value rather than the column leaves UPDATED_AT bare
+// on the left-hand side, so its index still serves the window.
+const sinceWindowUTC = `CAST(FROM_TZ(CAST(:1 AS TIMESTAMP), 'UTC') AT TIME ZONE SESSIONTIMEZONE AS TIMESTAMP)`
 
 type Repository interface {
 	GetFlagsByID(ctx context.Context, id int64) (*Flag, error)
@@ -205,6 +216,11 @@ func (r *OracleRepository) CreateFlag(ctx context.Context, input Flag) (*Flag, e
 		VALUES (:1, :2, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.FlagKey, input.IsActive); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, ErrFlagExists
+		}
 		return nil, fmt.Errorf("create flag: %w", err)
 	}
 
@@ -310,6 +326,11 @@ func (r *OracleRepository) CreateFlagValue(ctx context.Context, input FlagValue)
 		VALUES (:1, :2, :3, :4, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.EnvironmentID, input.FlagId, input.Enabled, input.Value); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, "", ErrFlagValueExists
+		}
 		return nil, "", fmt.Errorf("create flag value: %w", err)
 	}
 
@@ -494,9 +515,12 @@ func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.T
 	query := base
 	var args []any
 	if !since.IsZero() {
-		query = base + ` WHERE fv.UPDATED_AT >= :1`
-		args = append(args, since)
+		query = base + ` WHERE fv.UPDATED_AT >= ` + sinceWindowUTC
+		args = append(args, since.UTC())
 	}
+	// A deterministic order matters when the sweep cannot publish every row:
+	// which rows a stalled sweep got to has to be the same every cycle.
+	query += ` ORDER BY fv.ID`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

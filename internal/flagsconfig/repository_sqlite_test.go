@@ -294,3 +294,61 @@ func TestUpdateFlagValueOptimisticConcurrency(t *testing.T) {
 		t.Fatalf("unguarded update did not apply: %+v", after)
 	}
 }
+
+// The pre-check that keeps a duplicate create out is a SELECT followed by an
+// INSERT with nothing holding the two together, so two creates racing on the
+// same key both pass the check and one of them hits the constraint. The trigger
+// stands in for the winning request: it lands between the loser's check and its
+// insert, which is the interleaving a serial test cannot otherwise reach. The
+// loser has to see the same "already exists" a serial create would have
+// produced, not a bare driver error the handler turns into a 500.
+func TestConcurrentCreateCollidesAsAlreadyExists(t *testing.T) {
+	repo, db := newTestRepo(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER winner_flag BEFORE INSERT ON CONFIG_FLAG
+		WHEN NEW.FLAG_KEY = 'race_me'
+		BEGIN
+			INSERT INTO CONFIG_FLAG (FLAG_KEY, IS_ACTIVE) VALUES ('race_me', 1);
+		END;`); err != nil {
+		t.Fatalf("install the racing writer: %v", err)
+	}
+	if _, err := repo.CreateFlag(ctx, flagsconfig.Flag{FlagKey: "race_me", IsActive: 1}); !errors.Is(err, flagsconfig.ErrFlagExists) {
+		t.Fatalf("lost create of a flag: expected ErrFlagExists, got %v", err)
+	}
+
+	// The same for a flag value's (ENVIRONMENT_ID, FLAG_ID) key. Flag 9 has no
+	// value in environment 2, so the pre-check passes.
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER winner_flag_value BEFORE INSERT ON CONFIG_FLAG_VALUE
+		WHEN NEW.ENVIRONMENT_ID = 2 AND NEW.FLAG_ID = 9
+		BEGIN
+			INSERT INTO CONFIG_FLAG_VALUE (ENVIRONMENT_ID, FLAG_ID, ENABLED, VALUE)
+			VALUES (2, 9, 1, 'theirs');
+		END;`); err != nil {
+		t.Fatalf("install the racing writer: %v", err)
+	}
+	if _, _, err := repo.CreateFlagValue(ctx, flagsconfig.FlagValue{
+		EnvironmentID: 2, FlagId: 9, Enabled: 1, Value: "mine",
+	}); !errors.Is(err, flagsconfig.ErrFlagValueExists) {
+		t.Fatalf("lost create of a flag value: expected ErrFlagValueExists, got %v", err)
+	}
+}
+
+// The rows a stalled sweep reaches have to be the same ones every cycle;
+// without an ORDER BY, which rows get stranded is whatever the database felt
+// like returning.
+func TestListAllForReconcileIsOrdered(t *testing.T) {
+	repo, _ := newTestRepo(t)
+
+	rows, err := repo.ListAllForReconcile(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i].ID <= rows[i-1].ID {
+			t.Fatalf("rows are not ordered by id: %d after %d", rows[i].ID, rows[i-1].ID)
+		}
+	}
+}

@@ -8,7 +8,18 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
+
+// sinceWindowUTC converts the bound reconcile window into the session time zone
+// before comparing it. UPDATED_AT is a plain TIMESTAMP written by
+// CURRENT_TIMESTAMP, so it carries the session's local wall clock, while the
+// bound value comes from a Go UTC clock — on a non-UTC session comparing them
+// directly matches the wrong rows, or none at all, and reports success either
+// way. Converting the bound value rather than the column leaves UPDATED_AT bare
+// on the left-hand side, so its index still serves the window.
+const sinceWindowUTC = `CAST(FROM_TZ(CAST(:1 AS TIMESTAMP), 'UTC') AT TIME ZONE SESSIONTIMEZONE AS TIMESTAMP)`
 
 type Repository interface {
 	GetLocalizationByID(ctx context.Context, id int64) (*Localization, error)
@@ -71,6 +82,13 @@ func (r *OracleRepository) GetLocalization(ctx context.Context, microserviceID, 
 }
 
 func (r *OracleRepository) UpdateLocalization(ctx context.Context, input Localization) (*Localization, error) {
+	// An update rewrites the natural key, so it needs the same referential and
+	// uniqueness checks a create gets: without them it can point at rows that
+	// do not exist, or collide with another row and surface as a 500.
+	if err := r.checkRefs(ctx, input); err != nil {
+		return nil, err
+	}
+
 	const query = `
 		UPDATE CONFIG_LOCALIZATION
 		SET MICROSERVICE_ID = :1,
@@ -84,7 +102,7 @@ func (r *OracleRepository) UpdateLocalization(ctx context.Context, input Localiz
 	// Optimistic concurrency is opt-in: only when the caller told us which
 	// version it read does the UPDATE become conditional.
 	stmt := query
-	args := []any{input.MicroserviceID, input.EnvironmentID, input.Locale, string(input.BundleJSON), input.ID}
+	args := []any{input.MicroserviceID, input.EnvironmentID, input.Locale, database.CLOB(string(input.BundleJSON)), input.ID}
 	if input.ExpectedUpdatedAt != nil {
 		stmt += ` AND UPDATED_AT = :6`
 		args = append(args, *input.ExpectedUpdatedAt)
@@ -92,6 +110,9 @@ func (r *OracleRepository) UpdateLocalization(ctx context.Context, input Localiz
 
 	result, err := r.db.ExecContext(ctx, stmt, args...)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrLocalizationExists
+		}
 		return nil, fmt.Errorf("update localization: %w", err)
 	}
 
@@ -160,7 +181,12 @@ func (r *OracleRepository) CreateLocalization(ctx context.Context, input Localiz
 		VALUES (:1, :2, :3, :4, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert,
-		input.MicroserviceID, input.EnvironmentID, input.Locale, string(input.BundleJSON)); err != nil {
+		input.MicroserviceID, input.EnvironmentID, input.Locale, database.CLOB(string(input.BundleJSON))); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, ErrLocalizationExists
+		}
 		return nil, fmt.Errorf("create localization: %w", err)
 	}
 
@@ -190,9 +216,13 @@ func (r *OracleRepository) checkRefs(ctx context.Context, input Localization) er
 		return ErrEnvironmentNotFound
 	}
 
+	// An update may legitimately keep the natural key it already holds, so the
+	// row being written is excluded; on a create input.ID is zero and excludes
+	// nothing.
 	taken, err := r.count(ctx,
-		`SELECT COUNT(*) FROM CONFIG_LOCALIZATION WHERE MICROSERVICE_ID = :1 AND ENVIRONMENT_ID = :2 AND LOCALE = :3`,
-		input.MicroserviceID, input.EnvironmentID, input.Locale)
+		`SELECT COUNT(*) FROM CONFIG_LOCALIZATION
+		 WHERE MICROSERVICE_ID = :1 AND ENVIRONMENT_ID = :2 AND LOCALE = :3 AND ID <> :4`,
+		input.MicroserviceID, input.EnvironmentID, input.Locale, input.ID)
 	if err != nil {
 		return err
 	}
@@ -253,9 +283,12 @@ func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.T
 	query := `SELECT ` + selectColumns + ` FROM CONFIG_LOCALIZATION`
 	var args []any
 	if !since.IsZero() {
-		query += ` WHERE UPDATED_AT >= :1`
-		args = append(args, since)
+		query += ` WHERE UPDATED_AT >= ` + sinceWindowUTC
+		args = append(args, since.UTC())
 	}
+	// A deterministic order matters when the sweep cannot publish every row:
+	// which rows a stalled sweep got to has to be the same every cycle.
+	query += ` ORDER BY ID`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

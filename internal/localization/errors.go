@@ -9,6 +9,11 @@ var ErrInvalidEnvironmentID = errors.New("invalid environment id")
 var ErrInvalidLocale = errors.New("invalid locale")
 var ErrInvalidBundleJSON = errors.New("invalid bundle json")
 
+// ErrBundleTooLarge rejects a bundle bigger than a KV value may be. Accepting
+// it would return a 201 for a row that can never be published, so the write
+// would look successful while consumers never saw it.
+var ErrBundleTooLarge = errors.New("bundle json exceeds the maximum value size")
+
 // Referential integrity is checked before the insert so a missing parent row
 // surfaces as a 404 instead of an opaque foreign-key failure.
 var ErrMicroserviceNotFound = errors.New("microservice not found")

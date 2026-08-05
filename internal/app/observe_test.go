@@ -144,3 +144,38 @@ func TestPanicIsRecoveredAndLogged(t *testing.T) {
 		t.Errorf("error.stack_trace does not name the panicking frame: %v", line["error.stack_trace"])
 	}
 }
+
+// r.Method is caller input and a metric label allocates a series that lives as
+// long as the process. Without an allowlist, `curl -X <anything>` on an open
+// route is unauthenticated, unrate-limited memory growth and a /metrics body
+// that keeps getting slower to scrape.
+func TestMethodLabelIsBounded(t *testing.T) {
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
+		if got := methodLabel(method); got != method {
+			t.Errorf("methodLabel(%q) = %q, want it kept", method, got)
+		}
+	}
+	for _, method := range []string{"BREW", "PROPFIND", "x", "GETX", "get", ""} {
+		if got := methodLabel(method); got != "other" {
+			t.Errorf("methodLabel(%q) = %q, want \"other\"", method, got)
+		}
+	}
+}
+
+// The bound label has to be the one that actually reaches the counter, not just
+// something the helper could produce.
+func TestUnknownMethodDoesNotAllocateASeries(t *testing.T) {
+	// serveObserved labels the route with the request's own method and path.
+	const route = "BREW /flags"
+	before := obs.HTTPRequests.Value("method", "BREW", "route", route, "status", "200")
+	other := obs.HTTPRequests.Value("method", "other", "route", route, "status", "200")
+
+	serveObserved(t, httptest.NewRequest("BREW", "/flags", nil), http.HandlerFunc(okHandler))
+
+	if got := obs.HTTPRequests.Value("method", "BREW", "route", route, "status", "200"); got != before {
+		t.Errorf("a series was allocated for an arbitrary method: %d", got)
+	}
+	if got := obs.HTTPRequests.Value("method", "other", "route", route, "status", "200"); got != other+1 {
+		t.Errorf("the \"other\" series = %d, want %d", got, other+1)
+	}
+}

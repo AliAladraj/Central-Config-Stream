@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
 
 // sqliteTimeLayout is how SQLite's CURRENT_TIMESTAMP renders a UTC timestamp.
@@ -180,6 +182,11 @@ func (r *SQLiteRepository) CreateFlag(ctx context.Context, input Flag) (*Flag, e
 		VALUES (?, ?, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.FlagKey, input.IsActive); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, ErrFlagExists
+		}
 		return nil, fmt.Errorf("create flag: %w", err)
 	}
 
@@ -280,6 +287,11 @@ func (r *SQLiteRepository) CreateFlagValue(ctx context.Context, input FlagValue)
 		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.EnvironmentID, input.FlagId, input.Enabled, input.Value); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, "", ErrFlagValueExists
+		}
 		return nil, "", fmt.Errorf("create flag value: %w", err)
 	}
 
@@ -404,6 +416,9 @@ func (r *SQLiteRepository) ListAllForReconcile(ctx context.Context, since time.T
 		query = base + ` WHERE fv.UPDATED_AT >= ?`
 		args = append(args, since.UTC().Format(sqliteTimeLayout))
 	}
+	// A deterministic order matters when the sweep cannot publish every row:
+	// which rows a stalled sweep got to has to be the same every cycle.
+	query += ` ORDER BY fv.ID`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

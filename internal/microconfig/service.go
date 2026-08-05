@@ -36,8 +36,18 @@ func (s *Service) UpdateMicroserviceConfig(ctx context.Context, req Microservice
 		return nil, ErrInvalidEnvironmentID
 	}
 
-	if !validSettings(req.SettingsJSON) {
-		return nil, ErrInvalidSettingsJSON
+	if err := checkSettings(req.SettingsJSON); err != nil {
+		return nil, err
+	}
+
+	// An update may move the row to another (microservice, environment), which
+	// is a different KV key. The one it used to feed is read before the write,
+	// because afterwards there is nothing left to derive it from — and leaving
+	// it behind means consumers in the old environment keep serving settings no
+	// row backs.
+	previous, err := s.repo.GetMicroserviceConfigByID(ctx, req.ID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 1. Oracle is the source of truth.
@@ -50,6 +60,7 @@ func (s *Service) UpdateMicroserviceConfig(ctx context.Context, req Microservice
 	if err := s.pub.PublishMicroConfig(ctx, updated.EnvironmentID, updated.MicroserviceID, updated.SettingsJSON); err != nil {
 		logPublishFailure(ctx, updated.EnvironmentID, updated.MicroserviceID, err)
 	}
+	s.purgeMoved(ctx, previous, updated)
 
 	return updated, nil
 }
@@ -84,8 +95,8 @@ func (s *Service) CreateMicroserviceConfig(ctx context.Context, req Microservice
 		return nil, ErrInvalidEnvironmentID
 	}
 
-	if !validSettings(req.SettingsJSON) {
-		return nil, ErrInvalidSettingsJSON
+	if err := checkSettings(req.SettingsJSON); err != nil {
+		return nil, err
 	}
 
 	// 1. Oracle is the source of truth.
@@ -178,15 +189,40 @@ func logPublishFailure(ctx context.Context, environmentID, microserviceID int64,
 		obs.Err(err))
 }
 
-// validSettings rejects anything a consumer cannot bind to its configuration
+// purgeMoved drops the KV key an update left behind when it moved the row to a
+// different (environment, microservice). Nothing else removes it until the next
+// full reconcile sweep, and until then consumers in the old environment keep
+// the settings they last saw.
+func (s *Service) purgeMoved(ctx context.Context, previous, updated *MicroserviceAppSettings) {
+	old := messaging.MicroKey(previous.EnvironmentID, previous.MicroserviceID)
+	if old == messaging.MicroKey(updated.EnvironmentID, updated.MicroserviceID) {
+		return
+	}
+	if err := s.pub.DeleteKey(ctx, messaging.BucketMicroConfig, old); err != nil {
+		obs.FromContext(ctx, "microconfig").Error("purge moved settings failed (will reconcile)",
+			slog.String("kv.key", old), obs.Err(err))
+	}
+}
+
+// checkSettings rejects anything a consumer cannot bind to its configuration
 // object. A top-level array or scalar is well-formed JSON but breaks every
 // consumer's deserialization at once, and KV would have published it happily.
-func validSettings(settings json.RawMessage) bool {
-	if len(settings) == 0 || !json.Valid(settings) {
-		return false
+//
+// Size is checked here too, against the same ceiling the bucket is configured
+// with: the tree is published verbatim as the KV value, so anything JetStream
+// would refuse has to be refused before the row exists, not accepted with a 201
+// and left failing at publish forever.
+func checkSettings(settings json.RawMessage) error {
+	if len(settings) > messaging.MaxValueSize {
+		return ErrSettingsTooLarge
 	}
-	trimmed := bytes.TrimLeft(settings, " \t\r\n")
-	return len(trimmed) > 0 && trimmed[0] == '{'
+	if len(settings) == 0 || !json.Valid(settings) {
+		return ErrInvalidSettingsJSON
+	}
+	if trimmed := bytes.TrimLeft(settings, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
+		return ErrInvalidSettingsJSON
+	}
+	return nil
 }
 
 // validName bounds a reference-table name. Empty names make an unusable admin

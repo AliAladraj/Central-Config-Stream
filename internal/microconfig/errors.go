@@ -7,6 +7,11 @@ var ErrInvalidConfigID = errors.New("invalid config id")
 var ErrInvalidMicroserviceID = errors.New("invalid microservice id")
 var ErrInvalidEnvironmentID = errors.New("invalid environment id")
 var ErrInvalidSettingsJSON = errors.New("invalid settings json")
+
+// ErrSettingsTooLarge rejects a tree bigger than a KV value may be. Accepting
+// it would return a 201 for a row that can never be published, so the write
+// would look successful while consumers never saw it.
+var ErrSettingsTooLarge = errors.New("settings json exceeds the maximum value size")
 var ErrMicroserviceNotFound = errors.New("microservice not found")
 var ErrEnvironmentNotFound = errors.New("environment not found")
 

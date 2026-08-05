@@ -66,12 +66,19 @@ spec:
             - name: nats-creds
               mountPath: /etc/nats
               readOnly: true
+          # Liveness answers for the process only. /health reports the
+          # database and NATS, so pointing liveness at it turns a NATS outage
+          # into a crash loop across every replica — taking the admin API's
+          # read paths down with it, exactly when an operator needs to turn a
+          # flag off.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /livez
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+          # Readiness is where a dependency outage belongs: the pod stops
+          # taking traffic and stays up to recover.
           readinessProbe:
             httpGet:
               path: /health

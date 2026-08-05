@@ -22,7 +22,8 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errors.Is(err, ErrInvalidMicroserviceID),
 		errors.Is(err, ErrInvalidEnvironmentID),
 		errors.Is(err, ErrInvalidLocale),
-		errors.Is(err, ErrInvalidBundleJSON):
+		errors.Is(err, ErrInvalidBundleJSON),
+		errors.Is(err, ErrBundleTooLarge):
 		web.Error(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrLocalizationNotFound),
 		errors.Is(err, ErrMicroserviceNotFound),

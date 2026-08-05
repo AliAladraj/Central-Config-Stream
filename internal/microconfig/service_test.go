@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
@@ -200,5 +201,122 @@ func TestListFiltersAndPages(t *testing.T) {
 	}
 	if len(configs) != 1 || configs[0].MicroserviceID != 1 {
 		t.Fatalf("unexpected configs for microservice 1: %+v", configs)
+	}
+}
+
+// The update path rewrites MICROSERVICE_ID and ENVIRONMENT_ID, so it needs the
+// referential and uniqueness checks the create path runs — otherwise it points
+// a row at a parent that does not exist, or collides with another row and
+// surfaces as a 500 instead of a 409.
+func TestUpdateMicroserviceConfigChecksRefsAndUniqueness(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Seed row 200 is microservice 1 in environment 1.
+	if _, err := svc.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 999, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{}`),
+	}); !errors.Is(err, microconfig.ErrMicroserviceNotFound) {
+		t.Errorf("expected ErrMicroserviceNotFound, got %v", err)
+	}
+	if _, err := svc.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 1, EnvironmentID: 999, SettingsJSON: json.RawMessage(`{}`),
+	}); !errors.Is(err, microconfig.ErrEnvironmentNotFound) {
+		t.Errorf("expected ErrEnvironmentNotFound, got %v", err)
+	}
+
+	// Row 201 already holds (microservice 2, environment 1).
+	if _, err := svc.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 2, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{}`),
+	}); !errors.Is(err, microconfig.ErrConfigExists) {
+		t.Errorf("expected ErrConfigExists, got %v", err)
+	}
+
+	// A row keeping the key it already has is not a collision with itself.
+	if _, err := svc.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 1, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{"a":1}`),
+	}); err != nil {
+		t.Errorf("update in place: %v", err)
+	}
+}
+
+// Moving a row to another environment publishes a new KV key. The old one has
+// no row behind it any more, so leaving it there means consumers in the old
+// environment keep serving settings that no longer exist.
+func TestUpdateMicroserviceConfigPurgesTheKeyItMovedAwayFrom(t *testing.T) {
+	svc, pub, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Seed row 200 is microservice 1 in environment 1; environment 3 is free.
+	if _, err := svc.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 1, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{"a":1}`),
+	}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	if len(pub.published) != 1 || pub.published[0] != "3.1" {
+		t.Fatalf("the new key was not published: %v", pub.published)
+	}
+	if len(pub.deleted) != 1 || pub.deleted[0] != "MICROCONFIG|1.1" {
+		t.Fatalf("the key the row moved away from was not purged: %v", pub.deleted)
+	}
+}
+
+// An update that keeps the same identity has no old key to purge.
+func TestUpdateMicroserviceConfigInPlacePurgesNothing(t *testing.T) {
+	svc, pub, _ := newTestService(t)
+
+	if _, err := svc.UpdateMicroserviceConfig(context.Background(), microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 1, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{"a":1}`),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(pub.deleted) != 0 {
+		t.Fatalf("an in-place update purged a key: %v", pub.deleted)
+	}
+}
+
+// A settings tree bigger than a KV value may be used to be stored and answered
+// with a 201, then fail at publish on every sweep from then on — the drift that
+// wedged a whole domain's convergence. It is a validation error now, on both
+// write paths, and the row is never created.
+func TestOversizedSettingsAreRejected(t *testing.T) {
+	svc, pub, _ := newTestService(t)
+	ctx := context.Background()
+
+	oversized := json.RawMessage(`{"k":"` + strings.Repeat("x", messaging.MaxValueSize) + `"}`)
+
+	_, err := svc.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		MicroserviceID: 2, EnvironmentID: 3, SettingsJSON: oversized,
+	})
+	if !errors.Is(err, microconfig.ErrSettingsTooLarge) {
+		t.Fatalf("create: expected ErrSettingsTooLarge, got %v", err)
+	}
+
+	rows, err := svc.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
+		Page: microconfig.Page{Limit: 100}, MicroserviceID: 2, EnvironmentID: 3,
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("an oversized create still wrote a row: %+v", rows)
+	}
+
+	_, err = svc.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		ID: 200, MicroserviceID: 1, EnvironmentID: 1, SettingsJSON: oversized,
+	})
+	if !errors.Is(err, microconfig.ErrSettingsTooLarge) {
+		t.Fatalf("update: expected ErrSettingsTooLarge, got %v", err)
+	}
+	if len(pub.published) != 0 {
+		t.Fatalf("an oversized tree reached KV: %v", pub.published)
+	}
+
+	// A tree right up against the ceiling is still accepted.
+	fitting := json.RawMessage(`{"k":"` + strings.Repeat("x", messaging.MaxValueSize-16) + `"}`)
+	if _, err := svc.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+		MicroserviceID: 2, EnvironmentID: 3, SettingsJSON: fitting,
+	}); err != nil {
+		t.Fatalf("a tree inside the ceiling was rejected: %v", err)
 	}
 }

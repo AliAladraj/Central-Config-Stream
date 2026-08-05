@@ -8,7 +8,18 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
+
+// sinceWindowUTC converts the bound reconcile window into the session time zone
+// before comparing it. UPDATED_AT is a plain TIMESTAMP written by
+// CURRENT_TIMESTAMP, so it carries the session's local wall clock, while the
+// bound value comes from a Go UTC clock — on a non-UTC session comparing them
+// directly matches the wrong rows, or none at all, and reports success either
+// way. Converting the bound value rather than the column leaves UPDATED_AT bare
+// on the left-hand side, so its index still serves the window.
+const sinceWindowUTC = `CAST(FROM_TZ(CAST(:1 AS TIMESTAMP), 'UTC') AT TIME ZONE SESSIONTIMEZONE AS TIMESTAMP)`
 
 type Repository interface {
 	GetMicroserviceConfigByID(ctx context.Context, id int64) (*MicroserviceAppSettings, error)
@@ -68,6 +79,13 @@ func (r *OracleRepository) GetMicroserviceConfigByID(ctx context.Context, id int
 }
 
 func (r *OracleRepository) UpdateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error) {
+	// An update rewrites the natural key, so it needs the same referential and
+	// uniqueness checks a create gets: without them it can point at rows that
+	// do not exist, or collide with another row and surface as a 500.
+	if err := r.checkAppSettingsRefs(ctx, input); err != nil {
+		return nil, err
+	}
+
 	const query = `
 		UPDATE CONFIG_MICROSERVICE_APPSETTINGS
 		SET MICROSERVICE_ID = :1,
@@ -77,12 +95,10 @@ func (r *OracleRepository) UpdateMicroserviceConfig(ctx context.Context, input M
 		WHERE ID = :4
 	`
 
-	settingsText := string(input.SettingsJSON)
-
 	// Optimistic concurrency is opt-in: only when the caller told us which
 	// version it read does the UPDATE become conditional.
 	stmt := query
-	args := []any{input.MicroserviceID, input.EnvironmentID, settingsText, input.ID}
+	args := []any{input.MicroserviceID, input.EnvironmentID, database.CLOB(string(input.SettingsJSON)), input.ID}
 	if input.ExpectedUpdatedAt != nil {
 		stmt += ` AND UPDATED_AT = :5`
 		args = append(args, *input.ExpectedUpdatedAt)
@@ -90,6 +106,9 @@ func (r *OracleRepository) UpdateMicroserviceConfig(ctx context.Context, input M
 
 	result, err := r.db.ExecContext(ctx, stmt, args...)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrConfigExists
+		}
 		return nil, fmt.Errorf("update config: %w", err)
 	}
 
@@ -128,9 +147,12 @@ func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.T
 	query := base
 	var args []any
 	if !since.IsZero() {
-		query = base + ` WHERE UPDATED_AT >= :1`
-		args = append(args, since)
+		query = base + ` WHERE UPDATED_AT >= ` + sinceWindowUTC
+		args = append(args, since.UTC())
 	}
+	// A deterministic order matters when the sweep cannot publish every row:
+	// which rows a stalled sweep got to has to be the same every cycle.
+	query += ` ORDER BY ID`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -214,7 +236,13 @@ func (r *OracleRepository) CreateMicroserviceConfig(ctx context.Context, input M
 		INSERT INTO CONFIG_MICROSERVICE_APPSETTINGS (MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON, UPDATED_AT)
 		VALUES (:1, :2, :3, CURRENT_TIMESTAMP)
 	`
-	if _, err := r.db.ExecContext(ctx, insert, input.MicroserviceID, input.EnvironmentID, string(input.SettingsJSON)); err != nil {
+	if _, err := r.db.ExecContext(ctx, insert,
+		input.MicroserviceID, input.EnvironmentID, database.CLOB(string(input.SettingsJSON))); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, ErrConfigExists
+		}
 		return nil, fmt.Errorf("create config: %w", err)
 	}
 
@@ -244,9 +272,13 @@ func (r *OracleRepository) checkAppSettingsRefs(ctx context.Context, input Micro
 		return ErrEnvironmentNotFound
 	}
 
+	// An update may legitimately keep the natural key it already holds, so the
+	// row being written is excluded; on a create input.ID is zero and excludes
+	// nothing.
 	taken, err := r.count(ctx,
-		`SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE MICROSERVICE_ID = :1 AND ENVIRONMENT_ID = :2`,
-		input.MicroserviceID, input.EnvironmentID)
+		`SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS
+		 WHERE MICROSERVICE_ID = :1 AND ENVIRONMENT_ID = :2 AND ID <> :3`,
+		input.MicroserviceID, input.EnvironmentID, input.ID)
 	if err != nil {
 		return err
 	}
@@ -334,6 +366,9 @@ func (r *OracleRepository) CreateMicroservice(ctx context.Context, name string) 
 
 	const insert = `INSERT INTO CONFIG_MICROSERVICES (MICROSERVICE, UPDATED_AT) VALUES (:1, CURRENT_TIMESTAMP)`
 	if _, err := r.db.ExecContext(ctx, insert, name); err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrMicroserviceExists
+		}
 		return nil, fmt.Errorf("create microservice: %w", err)
 	}
 
@@ -406,6 +441,9 @@ func (r *OracleRepository) CreateEnvironment(ctx context.Context, name string) (
 
 	const insert = `INSERT INTO CONFIG_ENVIRONMENTS (ENVIRONMENT, UPDATED_AT) VALUES (:1, CURRENT_TIMESTAMP)`
 	if _, err := r.db.ExecContext(ctx, insert, name); err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrEnvironmentExists
+		}
 		return nil, fmt.Errorf("create environment: %w", err)
 	}
 

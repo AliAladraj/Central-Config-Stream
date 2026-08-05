@@ -32,41 +32,100 @@ func observePublish(bucket string, skipped bool, err error) error {
 	return nil
 }
 
-// current returns the bytes stored under key, or nil when the key is absent.
-// A missing key is not an error — it is the ordinary "publish this" case.
-func current(ctx context.Context, kv jetstream.KeyValue, bucket, key string) ([]byte, error) {
+// publishAttempts bounds the revision-checked write loop. Each retry re-reads
+// what KV ended up holding and rebuilds the value from it, so a couple of
+// rounds settle any realistic race between two admins; past that the key is
+// genuinely contended and the reconciler is the better place to converge it.
+const publishAttempts = 3
+
+// stored is what KV holds under a key: the bytes, plus the revision they were
+// read at, which is what the write is then conditioned on. A zero revision
+// means the key is absent — the ordinary "publish this" case, not an error.
+type stored struct {
+	value    []byte
+	revision uint64
+}
+
+func current(ctx context.Context, kv jetstream.KeyValue, bucket, key string) (stored, error) {
 	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrKeyDeleted) {
-			return nil, nil
+			return stored{}, nil
 		}
-		return nil, fmt.Errorf("messaging: kv get %s/%s: %w", bucket, key, err)
+		return stored{}, fmt.Errorf("messaging: kv get %s/%s: %w", bucket, key, err)
 	}
-	return entry.Value(), nil
+	return stored{value: entry.Value(), revision: entry.Revision()}, nil
 }
 
-// putUnlessEqual writes value only when it differs from cur, the bytes already
-// stored under key. It reports whether the write was skipped.
+// buildValue derives, from the bytes KV currently holds, the bytes to write and
+// the bytes to compare those already there against. The two differ only for
+// flags, whose payload carries a timestamp that must not count as a change on
+// its own.
+type buildValue func(cur []byte) (write, compare []byte, err error)
+
+// publish writes what build derives from the stored value, conditioned on the
+// revision that value was read at. A plain Put would let two admins updating
+// the same key leave KV holding the older of the two writes while the database
+// holds the newer, with both requests answering 200; a revision-checked write
+// turns that into a conflict, which is re-resolved against whatever KV actually
+// ended up with.
 //
-// KV Put of a byte-identical value still cuts a revision and still pushes to
-// every watcher, so without this a full sweep fans a no-op update out to the
-// whole fleet — every consumer's OnChange handler rebuilding clients and
-// resetting log levels for nothing — and burns the bucket's history window on
-// identical revisions. Only exact equality skips: anything else, including a
-// value KV holds that Oracle disagrees with, is still published, so the
-// reconciler keeps healing drift.
-func putUnlessEqual(ctx context.Context, kv jetstream.KeyValue, bucket, key string, cur, value []byte) (bool, error) {
-	if cur != nil && bytes.Equal(cur, value) {
-		return true, nil
+// It reports whether the write was skipped. A KV write of a byte-identical
+// value still cuts a revision and still pushes to every watcher, so without the
+// skip a full sweep fans a no-op update out to the whole fleet — every
+// consumer's OnChange handler rebuilding clients and resetting log levels for
+// nothing — and burns the bucket's history window on identical revisions. Only
+// exact equality skips: anything else, including a value KV holds that Oracle
+// disagrees with, is still published, so the reconciler keeps healing drift.
+func publish(ctx context.Context, kv jetstream.KeyValue, bucket, key string, build buildValue) (bool, error) {
+	var conflict error
+	for attempt := 0; attempt < publishAttempts; attempt++ {
+		cur, err := current(ctx, kv, bucket, key)
+		if err != nil {
+			return false, err
+		}
+
+		write, compare, err := build(cur.value)
+		if err != nil {
+			return false, err
+		}
+		if cur.value != nil && bytes.Equal(cur.value, compare) {
+			return true, nil
+		}
+
+		if cur.revision == 0 {
+			_, err = kv.Create(ctx, key, write)
+		} else {
+			_, err = kv.Update(ctx, key, write, cur.revision)
+		}
+		switch {
+		case err == nil:
+			return false, nil
+		case errors.Is(err, jetstream.ErrKeyExists):
+			// The revision moved between the read and the write, so somebody
+			// else published first. Their value is the newer one: re-read and
+			// rebuild rather than overwriting it with what was already stale.
+			conflict = err
+		default:
+			return false, fmt.Errorf("messaging: kv put %s/%s: %w", bucket, key, err)
+		}
 	}
-	return false, put(ctx, kv, bucket, key, value)
+	return false, fmt.Errorf("messaging: kv put %s/%s: %w", bucket, key, conflict)
 }
 
-func put(ctx context.Context, kv jetstream.KeyValue, bucket, key string, value []byte) error {
-	if _, err := kv.Put(ctx, key, value); err != nil {
-		return fmt.Errorf("messaging: kv put %s/%s: %w", bucket, key, err)
-	}
-	return nil
+// raw builds a value that is stored exactly as given — the appsettings tree and
+// the translation bundle are published verbatim, so what is written and what is
+// compared are the same bytes.
+func raw(value []byte) buildValue {
+	return func([]byte) ([]byte, []byte, error) { return value, value, nil }
+}
+
+// KeyRevision pairs a KV key with the revision of the value it holds. The
+// revision is a per-bucket sequence, so comparing two readings of it is how a
+// caller decides whether a key changed between them without trusting a clock.
+type KeyRevision struct {
+	Key      string
+	Revision uint64
 }
 
 type FlagPayload struct {
@@ -83,6 +142,10 @@ type ConfigPublisher interface {
 	// ListKeys returns every key currently held in the named bucket. A bucket
 	// that is empty or does not exist yields no keys and no error.
 	ListKeys(ctx context.Context, bucket string) ([]string, error)
+	// ListRevisions returns the same keys with the revision each one is
+	// currently at. The reconciler needs the revisions to tell a key that has
+	// sat untouched since its sweep began from one written during it.
+	ListRevisions(ctx context.Context, bucket string) ([]KeyRevision, error)
 	// DeleteKey removes a key from the named bucket. This is how a row deleted
 	// from the database stops being served: without it the KV entry survives
 	// forever and consumers keep the stale value in memory.
@@ -111,39 +174,34 @@ func (p *Publisher) publishFlag(ctx context.Context, environmentID int64, flagKe
 		return false, err
 	}
 	key := FlagKey(environmentID, flagKey)
-	cur, err := current(ctx, kv, BucketFlags, key)
-	if err != nil {
-		return false, err
-	}
 
-	// No caller sets UpdatedAt — it is stamped here — so a fresh timestamp on
-	// every call would make every payload differ and defeat the comparison
-	// entirely. "Unchanged" therefore means the same flag state, not the same
-	// bytes for the same instant: the stored timestamp is carried over before
-	// comparing, and a new one is stamped only when the state really changed.
-	// A caller that does supply UpdatedAt is compared on it as written.
-	compare := payload
-	if compare.UpdatedAt == "" {
-		var prev FlagPayload
-		if err := json.Unmarshal(cur, &prev); err == nil {
-			compare.UpdatedAt = prev.UpdatedAt
+	return publish(ctx, kv, BucketFlags, key, func(cur []byte) ([]byte, []byte, error) {
+		// No caller sets UpdatedAt — it is stamped here — so a fresh timestamp
+		// on every call would make every payload differ and defeat the
+		// comparison entirely. "Unchanged" therefore means the same flag state,
+		// not the same bytes for the same instant: the stored timestamp is
+		// carried into the value compared against, and a fresh one only into
+		// the value actually written. A caller that does supply UpdatedAt is
+		// compared on it as written.
+		written, compared := payload, payload
+		if payload.UpdatedAt == "" {
+			var prev FlagPayload
+			if err := json.Unmarshal(cur, &prev); err == nil {
+				compared.UpdatedAt = prev.UpdatedAt
+			}
+			written.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		}
-	}
-	b, err := json.Marshal(compare)
-	if err != nil {
-		return false, fmt.Errorf("messaging: marshal flag payload: %w", err)
-	}
-	if cur != nil && bytes.Equal(cur, b) {
-		return true, nil
-	}
 
-	if payload.UpdatedAt == "" {
-		payload.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if b, err = json.Marshal(payload); err != nil {
-			return false, fmt.Errorf("messaging: marshal flag payload: %w", err)
+		w, err := json.Marshal(written)
+		if err != nil {
+			return nil, nil, fmt.Errorf("messaging: marshal flag payload: %w", err)
 		}
-	}
-	return false, put(ctx, kv, BucketFlags, key, b)
+		c, err := json.Marshal(compared)
+		if err != nil {
+			return nil, nil, fmt.Errorf("messaging: marshal flag payload: %w", err)
+		}
+		return w, c, nil
+	})
 }
 
 func (p *Publisher) PublishMicroConfig(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) error {
@@ -159,12 +217,7 @@ func (p *Publisher) publishMicroConfig(ctx context.Context, environmentID, micro
 	if err != nil {
 		return false, err
 	}
-	key := MicroKey(environmentID, microserviceID)
-	cur, err := current(ctx, kv, BucketMicroConfig, key)
-	if err != nil {
-		return false, err
-	}
-	return putUnlessEqual(ctx, kv, BucketMicroConfig, key, cur, settings)
+	return publish(ctx, kv, BucketMicroConfig, MicroKey(environmentID, microserviceID), raw(settings))
 }
 
 func (p *Publisher) PublishLocalization(ctx context.Context, environmentID, microserviceID int64, locale string, bundle json.RawMessage) error {
@@ -183,12 +236,7 @@ func (p *Publisher) publishLocalization(ctx context.Context, environmentID, micr
 	if err != nil {
 		return false, err
 	}
-	key := LocalizationKey(environmentID, microserviceID, locale)
-	cur, err := current(ctx, kv, BucketLocalization, key)
-	if err != nil {
-		return false, err
-	}
-	return putUnlessEqual(ctx, kv, BucketLocalization, key, cur, bundle)
+	return publish(ctx, kv, BucketLocalization, LocalizationKey(environmentID, microserviceID, locale), raw(bundle))
 }
 
 func (p *Publisher) ListKeys(ctx context.Context, bucket string) ([]string, error) {
@@ -213,6 +261,41 @@ func (p *Publisher) ListKeys(ctx context.Context, bucket string) ([]string, erro
 		keys = append(keys, k)
 	}
 	return keys, nil
+}
+
+// ListRevisions walks the bucket's current values metadata-only, so a sweep
+// over thousands of keys costs one pass and none of the payloads.
+func (p *Publisher) ListRevisions(ctx context.Context, bucket string) ([]KeyRevision, error) {
+	kv, err := p.buckets.byName(bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	watcher, err := kv.WatchAll(ctx, jetstream.IgnoreDeletes(), jetstream.MetaOnly())
+	if err != nil {
+		// Nothing to enumerate is not a failure — the caller simply has no
+		// keys to compare against this cycle.
+		if errors.Is(err, jetstream.ErrNoKeysFound) || errors.Is(err, jetstream.ErrBucketNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("messaging: kv list revisions %s: %w", bucket, err)
+	}
+	defer func() { _ = watcher.Stop() }()
+
+	var out []KeyRevision
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case entry := <-watcher.Updates():
+			// A nil entry closes the initial snapshot; everything after it
+			// would be a live update, which is not what is being asked for.
+			if entry == nil {
+				return out, nil
+			}
+			out = append(out, KeyRevision{Key: entry.Key(), Revision: entry.Revision()})
+		}
+	}
 }
 
 func (p *Publisher) DeleteKey(ctx context.Context, bucket, key string) error {

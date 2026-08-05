@@ -26,6 +26,10 @@ func (NoopPublisher) ListKeys(context.Context, string) ([]string, error) {
 	return nil, nil
 }
 
+func (NoopPublisher) ListRevisions(context.Context, string) ([]KeyRevision, error) {
+	return nil, nil
+}
+
 func (NoopPublisher) DeleteKey(context.Context, string, string) error {
 	return nil
 }

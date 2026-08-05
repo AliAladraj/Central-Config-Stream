@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
 
 // sqliteTimeLayout is how SQLite's CURRENT_TIMESTAMP renders a UTC timestamp.
@@ -52,6 +54,13 @@ func (r *SQLiteRepository) GetMicroserviceConfigByID(ctx context.Context, id int
 }
 
 func (r *SQLiteRepository) UpdateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error) {
+	// An update rewrites the natural key, so it needs the same referential and
+	// uniqueness checks a create gets: without them it can point at rows that
+	// do not exist, or collide with another row and surface as a 500.
+	if err := r.checkAppSettingsRefs(ctx, input); err != nil {
+		return nil, err
+	}
+
 	const query = `
 		UPDATE CONFIG_MICROSERVICE_APPSETTINGS
 		SET MICROSERVICE_ID = ?,
@@ -74,6 +83,9 @@ func (r *SQLiteRepository) UpdateMicroserviceConfig(ctx context.Context, input M
 
 	result, err := r.db.ExecContext(ctx, stmt, args...)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrConfigExists
+		}
 		return nil, fmt.Errorf("update config: %w", err)
 	}
 	rowsAffected, err := result.RowsAffected()
@@ -158,6 +170,11 @@ func (r *SQLiteRepository) CreateMicroserviceConfig(ctx context.Context, input M
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.MicroserviceID, input.EnvironmentID, string(input.SettingsJSON)); err != nil {
+		// The check above is a fast path, not a lock: two concurrent creates
+		// both pass it and the constraint decides between them.
+		if database.IsUniqueViolation(err) {
+			return nil, ErrConfigExists
+		}
 		return nil, fmt.Errorf("create config: %w", err)
 	}
 
@@ -185,9 +202,13 @@ func (r *SQLiteRepository) checkAppSettingsRefs(ctx context.Context, input Micro
 		return ErrEnvironmentNotFound
 	}
 
+	// An update may legitimately keep the natural key it already holds, so the
+	// row being written is excluded; on a create input.ID is zero and excludes
+	// nothing.
 	taken, err := r.count(ctx,
-		`SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE MICROSERVICE_ID = ? AND ENVIRONMENT_ID = ?`,
-		input.MicroserviceID, input.EnvironmentID)
+		`SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS
+		 WHERE MICROSERVICE_ID = ? AND ENVIRONMENT_ID = ? AND ID <> ?`,
+		input.MicroserviceID, input.EnvironmentID, input.ID)
 	if err != nil {
 		return err
 	}
@@ -275,6 +296,9 @@ func (r *SQLiteRepository) CreateMicroservice(ctx context.Context, name string) 
 
 	const insert = `INSERT INTO CONFIG_MICROSERVICES (MICROSERVICE, UPDATED_AT) VALUES (?, CURRENT_TIMESTAMP)`
 	if _, err := r.db.ExecContext(ctx, insert, name); err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrMicroserviceExists
+		}
 		return nil, fmt.Errorf("create microservice: %w", err)
 	}
 
@@ -343,6 +367,9 @@ func (r *SQLiteRepository) CreateEnvironment(ctx context.Context, name string) (
 
 	const insert = `INSERT INTO CONFIG_ENVIRONMENTS (ENVIRONMENT, UPDATED_AT) VALUES (?, CURRENT_TIMESTAMP)`
 	if _, err := r.db.ExecContext(ctx, insert, name); err != nil {
+		if database.IsUniqueViolation(err) {
+			return nil, ErrEnvironmentExists
+		}
 		return nil, fmt.Errorf("create environment: %w", err)
 	}
 
@@ -404,6 +431,9 @@ func (r *SQLiteRepository) ListAllForReconcile(ctx context.Context, since time.T
 		query = base + ` WHERE UPDATED_AT >= ?`
 		args = append(args, since.UTC().Format(sqliteTimeLayout))
 	}
+	// A deterministic order matters when the sweep cannot publish every row:
+	// which rows a stalled sweep got to has to be the same every cycle.
+	query += ` ORDER BY ID`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

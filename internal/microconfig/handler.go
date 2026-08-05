@@ -24,6 +24,7 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errors.Is(err, ErrInvalidMicroserviceID),
 		errors.Is(err, ErrInvalidEnvironmentID),
 		errors.Is(err, ErrInvalidSettingsJSON),
+		errors.Is(err, ErrSettingsTooLarge),
 		errors.Is(err, ErrInvalidMicroserviceName),
 		errors.Is(err, ErrInvalidEnvironmentName):
 		web.Error(w, http.StatusBadRequest, err.Error())

@@ -13,7 +13,7 @@
 // Cold start: if NATS is unreachable at boot, Options.HTTPFallback can hydrate
 // the cache once from central-config's HTTP GET endpoints. It is off by default
 // and never sits on the read path — see httpfallback.go for what it can and
-// cannot reach.
+// cannot reach, and for the bearer token those endpoints require.
 package configclient
 
 import (
@@ -72,7 +72,9 @@ type Options struct {
 
 	// HTTPFallback, if set, hydrates the cache from central-config's HTTP API
 	// when JetStream is unreachable at boot or a scoped key is missing from KV.
-	// Optional and boot-only; see HTTPFallback for its limits.
+	// Optional and boot-only; see HTTPFallback for its limits. It carries its
+	// own credential and New rejects one that cannot work, whether or not the
+	// fallback ends up being needed.
 	HTTPFallback *HTTPFallback
 
 	// Logger, if set, receives the client's diagnostics: watch failures, the
@@ -130,6 +132,10 @@ type Client struct {
 // what it can over HTTP and returns a client whose Status().Watching is false —
 // i.e. a running-on-a-cold-snapshot client that will never see updates. Without
 // a fallback configured, that case is still an error.
+//
+// A fallback that could not work — no BaseURL, or no credential for an API that
+// requires one — is an error here even when JetStream is healthy and the
+// fallback is never reached.
 func New(ctx context.Context, opts Options) (*Client, error) {
 	if opts.NATSURL == "" {
 		return nil, fmt.Errorf("configclient: NATSURL is required")
@@ -139,6 +145,11 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	}
 	if opts.MicroserviceID < 0 {
 		return nil, fmt.Errorf("configclient: MicroserviceID must not be negative")
+	}
+	if opts.HTTPFallback != nil {
+		if err := opts.HTTPFallback.validate(); err != nil {
+			return nil, err
+		}
 	}
 
 	c := &Client{

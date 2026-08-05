@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -24,6 +25,40 @@ func startJetStream(t *testing.T) string {
 	srv := natsserver.RunServer(&opts)
 	t.Cleanup(srv.Shutdown)
 	return srv.ClientURL()
+}
+
+// exampleControlPlane backs ExampleNew: an embedded JetStream server with one
+// flag, one appsettings blob and one bundle already published, standing in for
+// a central-config deployment. It lives here rather than beside the example so
+// that pkg.go.dev shows the example on its own.
+func exampleControlPlane() (url string, stop func()) {
+	opts := natsserver.DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir, _ = os.MkdirTemp("", "configclient-example")
+	srv := natsserver.RunServer(&opts)
+
+	must := func(err error) {
+		if err != nil {
+			panic(err)
+		}
+	}
+	ctx := context.Background()
+	client, err := messaging.Connect(messaging.Config{URL: srv.ClientURL(), Name: "example-cc"})
+	must(err)
+	buckets, err := messaging.EnsureBuckets(ctx, client.JS, messaging.BucketOptions{Replicas: 1})
+	must(err)
+
+	pub := messaging.NewPublisher(buckets)
+	must(pub.PublishFlag(ctx, 3, "search_v2", messaging.FlagPayload{Enabled: true, Value: "on"}))
+	must(pub.PublishMicroConfig(ctx, 3, 1, json.RawMessage(`{"timeout":30}`)))
+	must(pub.PublishLocalization(ctx, 3, 1, "pt-BR", json.RawMessage(`{"catalog.title":"Catálogo"}`)))
+
+	return srv.ClientURL(), func() {
+		client.Drain()
+		srv.Shutdown()
+		os.RemoveAll(opts.StoreDir)
+	}
 }
 
 // TestScopedClientIgnoresOtherServices proves the narrowed watch: a client
@@ -161,6 +196,12 @@ func TestFleetWideClientStillSeesEverything(t *testing.T) {
 // JetStream is unreachable, and that Status reports how it got there.
 func TestHTTPFallbackColdStart(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The real API authenticates these routes, so the fake does too —
+		// a fixture that answers anonymously cannot notice a missing header.
+		if r.Header.Get("Authorization") != "Bearer "+fallbackToken {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/flags/values/7":
@@ -185,6 +226,7 @@ func TestHTTPFallbackColdStart(t *testing.T) {
 		MicroserviceID: 1,
 		HTTPFallback: &configclient.HTTPFallback{
 			BaseURL:       api.URL,
+			Token:         fallbackToken,
 			Timeout:       2 * time.Second,
 			ConfigValueID: 9,
 			FlagValueIDs:  map[string]int64{"search_v2": 7},
@@ -249,7 +291,11 @@ func TestHTTPFallbackNotUsedWhenKVIsWarm(t *testing.T) {
 		NATSURL:        url,
 		EnvironmentID:  3,
 		MicroserviceID: 1,
-		HTTPFallback:   &configclient.HTTPFallback{BaseURL: api.URL, ConfigValueID: 9},
+		HTTPFallback: &configclient.HTTPFallback{
+			BaseURL:       api.URL,
+			Token:         fallbackToken,
+			ConfigValueID: 9,
+		},
 	})
 	if err != nil {
 		t.Fatalf("configclient new: %v", err)

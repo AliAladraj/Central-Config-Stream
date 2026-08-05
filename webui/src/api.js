@@ -19,9 +19,9 @@ export class ApiError extends Error {
   get explanation() {
     switch (this.status) {
       case 400: return 'The server rejected the request body. Fix the highlighted field and try again.'
-      case 401: return 'The console sent no admin token, or one the server does not know. Check ADMIN_TOKEN on the console process.'
-      case 403: return 'The console’s token is not scoped to this environment. It can read every environment but may only write to the ones its scope lists — ask for a wider token or make this change from an environment it covers.'
-      case 404: return 'That row no longer exists. Someone may have deleted it since this list was loaded.'
+      case 401: return 'The console sent no admin token, or one the server does not know. Every route but /health, /livez and /metrics needs one — check ADMIN_TOKEN on the console process.'
+      case 403: return 'The console’s token is not scoped to this environment. Its scope limits what it can read as well as what it can write — ask for a wider token or make this change from an environment it covers.'
+      case 404: return 'That row no longer exists, or the console’s token is not scoped to the environment it lives in — a row outside the scope answers 404 rather than 403, so that asking cannot confirm it exists.'
       case 409: return 'The write collided with another one. Either the row was changed since you loaded it, or a row with these keys already exists.'
       case 429: return this.retryAfter
         ? `The write rate limit is in effect. Retry in ${this.retryAfter}s.`

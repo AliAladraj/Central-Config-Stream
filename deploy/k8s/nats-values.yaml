@@ -1,0 +1,42 @@
+# Helm values for the nats/nats chart — 3-node JetStream cluster, file storage.
+# helm upgrade --install nats nats/nats -n messaging -f deploy/k8s/nats-values.yaml
+
+config:
+  cluster:
+    enabled: true
+    replicas: 3
+
+  jetstream:
+    enabled: true
+    fileStore:
+      enabled: true
+      dir: /data
+      pvc:
+        enabled: true
+        size: 10Gi
+        # storageClassName: <your-storage-class>
+    # memoryStore is left disabled — config must survive restarts.
+
+  # Enable and configure TLS for production. Provide a cert secret and CA.
+  # tls:
+  #   enabled: true
+  #   secretName: nats-server-tls
+  #   ca: "ca.crt"
+  #   cert: "tls.crt"
+  #   key: "tls.key"
+
+# Prometheus exporter sidecar for JetStream/stream metrics.
+promExporter:
+  enabled: true
+  port: 7777
+
+# Resource requests/limits per NATS pod (tune for your cluster).
+container:
+  merge:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi

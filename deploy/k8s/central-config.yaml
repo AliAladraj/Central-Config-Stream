@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: central-config
+  namespace: central-config
+  labels:
+    app: central-config
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: central-config
+  template:
+    metadata:
+      labels:
+        app: central-config
+      annotations:
+        # Prometheus text format on the same port as the API — see
+        # docs/OBSERVABILITY.md for what is exported and what to alert on.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: central-config
+          image: your-registry/central-config:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: ":8080"
+            - name: NATS_URL
+              value: "nats://nats.messaging.svc.cluster.local:4222"
+            - name: NATS_CREDS
+              value: "/etc/nats/nats.creds"
+            - name: PUBLISH_ENABLED
+              value: "true"
+            - name: NATS_REPLICAS
+              value: "3"
+            - name: RECONCILE_INTERVAL
+              value: "5m"
+            # ECS JSON on stdout, for Filebeat / Elastic Agent to pick up.
+            - name: LOG_FORMAT
+              value: "json"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: SERVICE_VERSION
+              value: "latest"
+            - name: CONN_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: central-config-secrets
+                  key: CONN_STRING
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: central-config-secrets
+                  key: ADMIN_TOKEN
+          volumeMounts:
+            - name: nats-creds
+              mountPath: /etc/nats
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: nats-creds
+          secret:
+            secretName: nats-creds
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: central-config
+  namespace: central-config
+  labels:
+    app: central-config
+spec:
+  selector:
+    app: central-config
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

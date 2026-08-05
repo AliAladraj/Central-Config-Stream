@@ -1,0 +1,72 @@
+# Local test stack: NATS JetStream + central-config (SQLite backend) + a
+# consumer console UI. Oracle is NOT used here — DB_DRIVER=sqlite swaps in the
+# test repositories so the JetStream distribution path can be exercised
+# end-to-end on a laptop.
+#
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   open http://localhost:8090
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring: http://localhost:8222/jsz?acc=$G
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8222/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  central-config:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: central-config
+    environment:
+      DB_DRIVER: sqlite
+      CONN_STRING: "file:/data/central-config.db?_pragma=busy_timeout(5000)"
+      PORT: ":8080"
+      NATS_URL: "nats://nats:4222"
+      PUBLISH_ENABLED: "true"
+      NATS_REPLICAS: "1"
+      RECONCILE_INTERVAL: "60s"
+      ADMIN_TOKEN: "local-dev-token"
+      # Readable lines in `docker compose logs`; production leaves LOG_FORMAT
+      # unset and gets ECS JSON for Elasticsearch. See docs/OBSERVABILITY.md.
+      LOG_FORMAT: "text"
+      LOG_LEVEL: "info"
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-data:/data
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  testconsole:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: testconsole
+    environment:
+      NATS_URL: "nats://nats:4222"
+      ENVIRONMENT_ID: "1"
+      CENTRAL_CONFIG_URL: "http://central-config:8080"
+      ADMIN_TOKEN: "local-dev-token"
+      PORT: ":8090"
+      WEB_DIR: "/app/web"
+    ports:
+      - "8090:8090"
+    depends_on:
+      - central-config
+
+volumes:
+  nats-data:
+  app-data:

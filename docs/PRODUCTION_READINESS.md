@@ -128,31 +128,30 @@ at `/livez` and only readiness at `/health`.
 
 ### 3.1 Only the repository layer runs against PostgreSQL
 
-**The gap this section used to describe is closed, not narrowed.** For the whole
-of the project's life until now, the production storage path was compile-verified
-only: every test ran against SQLite, whose SQL differs from the real backend in
-bind syntax, pagination clause and type handling. `internal/pgintegration` now
-runs the real repositories and the audit store against a live PostgreSQL, and
-CI runs it on every push and pull request (§3.6).
+`internal/pgintegration` runs the real repositories and the audit store against
+a live PostgreSQL, each test in a schema of its own that it migrates and seeds
+itself, and CI runs it on every push and pull request (§3.6). Everything else in
+the repository runs against the SQLite mirror, whose SQL differs from the real
+backend in bind syntax, pagination clause and type handling.
 
-Both of the examples this section used to lead with are gone rather than
-verified, which is the better outcome:
+The two properties a mirror schema is least able to vouch for are covered
+explicitly, because both fail silently rather than loudly:
 
-- **CLOB binding no longer exists.** `SETTINGS_JSON` and `BUNDLE_JSON` are
-  `TEXT`, and Postgres takes a plain Go string straight into them. There is no
-  wrapper type to get wrong, so `database.CLOB` was deleted rather than tested.
-  What is tested is the property that mattered underneath it: a large document
-  round-trips **byte-identically**, which is what the publisher's skip depends
-  on.
-- **The timezone-safe reconcile window is now a plain comparison.**
+- **A large document round-trips byte-identically.** `SETTINGS_JSON` and
+  `BUNDLE_JSON` are `TEXT`, and a document binds as an ordinary Go string with
+  no size-specific wrapper anywhere in the path.
+  `large_document_test.go` writes a 64 KiB non-canonical document — awkward key
+  order, irregular whitespace, multi-byte values — and compares the bytes back
+  through the create, the fetch by id, the list and the reconcile sweep.
+  Byte-identical is the bar rather than semantically-equal because that is what
+  the publisher's skip depends on.
+- **The reconcile window does not depend on the session's time zone.**
   `UPDATED_AT` is `TIMESTAMPTZ`, so the incremental sweep is
-  `WHERE UPDATED_AT >= $1` against a bound instant, and the
-  `FROM_TZ … SESSIONTIMEZONE` conversion the old column needed is deleted. That
-  removed a class of bug rather than an instance of one, and it is pinned:
-  `reconcile_timezone_test.go` runs the window on sessions at UTC+14
+  `WHERE UPDATED_AT >= $1` against a bound instant.
+  `reconcile_timezone_test.go` runs that window on sessions at UTC+14
   (`Pacific/Kiritimati`) and UTC−11 (`Pacific/Pago_Pago`) as well as UTC,
-  because those are the two signs the old error came in and a UTC-only CI runner
-  would have gone green against the broken column too.
+  because a timezone-sensitive comparison is wrong in both directions and a
+  UTC-only CI runner would go green against one.
 
 **What remains open is the boundary of that coverage.** The suite reaches the
 repositories and the audit store and stops there. `internal/app`'s end-to-end
@@ -161,11 +160,11 @@ reconciler driving real sources — still run on SQLite alone. So the SQL is
 exercised against the real backend; the wiring above it is exercised against the
 mirror schema.
 
-And the coverage is not deployment experience. PostgreSQL is newly adopted in
-this repository. No production instance has yet carried this schema, and the
-first one to do so will find whatever an integration suite on a throwaway
-container cannot: connection handling through a real pooler, a DBA's session
-settings, `max_connections` under real replica counts.
+And the coverage is not deployment experience. No production instance has yet
+carried this schema, and the first one to do so will find whatever an
+integration suite on a throwaway container cannot: connection handling through a
+real pooler, a DBA's session settings, `max_connections` under real replica
+counts.
 
 **Cost:** a defect in the layer above the repositories, or in an interaction the
 suite does not stage, still reaches a real deployment first. For the reconciler
@@ -216,15 +215,15 @@ out the permission model, and
 run. Nothing records which files have been applied, so nothing stops a partial
 or repeated application, and there is no down path.
 
-The dependency-order half of this gap is closed. **The file numbers are now the
+The dependency-order half of this gap is closed. **The file numbers are the
 apply order** — `CONFIG_ENVIRONMENTS` is `001`, `CONFIG_MICROSERVICES` is `002`,
 localization is `003` — so `psql -f` over the directory in lexical order works on
-an empty database. The renumbering happened during the port to Postgres, which
-was the last moment it was free: no deployment had applied the old names. And it
-is not merely asserted — `internal/pgintegration` applies `migrations/*.sql` in
-lexical order for *every one of its tests*, so a file that no longer applies, or
-one numbered ahead of something it references, is a red build rather than a
-discovery made during a deploy window.
+an empty database. And it is not merely asserted: `internal/pgintegration`
+applies `migrations/*.sql` in lexical order for *every one of its tests*, so a
+file that fails to apply, or one numbered ahead of something it references, is a
+red build rather than a discovery made during a deploy window. Renumbering stays
+free only while no deployment has applied the current names, which is what
+`migrations/001` warns about.
 
 **Cost:** what is left is bookkeeping. Nobody can tell you what a given database
 has had applied, an interrupted apply leaves no record of where it stopped, and

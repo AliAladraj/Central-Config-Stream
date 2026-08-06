@@ -9,11 +9,10 @@
 // which is what lets .goreleaser.yaml cross-compile four platforms from one
 // runner and the Dockerfile produce a distroless image.
 //
-// There is deliberately no large-document binding helper here. Oracle needed
-// one, because go-ora sent a Go string as VARCHAR2 and an ordinary appsettings
-// tree overflowed it; Postgres takes a plain Go string straight into a text
-// column, so the repositories bind documents as strings and nothing has to be
-// wrapped.
+// There is deliberately no large-document binding helper here. A settings tree
+// binds as an ordinary Go string straight into a text column at any size, so
+// the repositories pass documents as plain strings and there is no
+// size-specific wrapper type to remember.
 //
 // sqlite.go additionally defines the local schema and seed data by hand.
 // Nothing keeps that in step with migrations/, and because every test runs

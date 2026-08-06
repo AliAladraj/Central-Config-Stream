@@ -18,7 +18,7 @@ import (
 // appsettings tree hands over.
 const prodSeed = `
 INSERT OR IGNORE INTO CONFIG_MICROSERVICE_APPSETTINGS (ID, MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON) VALUES
-    (203, 1, 3, '{"connectionString":"oracle://svc:Hunter2@prod-db:1521/ORCL"}');
+    (203, 1, 3, '{"connectionString":"mongodb://svc:Hunter2@prod-db:27017/app"}');
 INSERT OR IGNORE INTO CONFIG_LOCALIZATION (ID, MICROSERVICE_ID, ENVIRONMENT_ID, LOCALE, BUNDLE_JSON) VALUES
     (302, 1, 3, 'en-US', '{"catalog.title":"Production"}');
 `

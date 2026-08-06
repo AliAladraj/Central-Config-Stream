@@ -226,7 +226,7 @@ func checkSettings(settings json.RawMessage) error {
 }
 
 // validName bounds a reference-table name. Empty names make an unusable admin
-// UI and the column is a VARCHAR2(100).
+// UI and the column is a VARCHAR(100).
 func validName(name string) bool {
 	return name != "" && len(name) <= 100
 }

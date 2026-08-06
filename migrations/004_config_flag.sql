@@ -3,9 +3,9 @@
 -- the second half of the FLAGS KV key ("{ENVIRONMENT_ID}.{FLAG_KEY}"), so it is
 -- restricted to characters a KV key allows and must never contain a dot.
 --
--- IS_ACTIVE is SMALLINT rather than BOOLEAN. Oracle had no boolean type and
--- modelled it as NUMBER(1); Postgres does have one, but the flag state is an
--- integer everywhere above this column — the Go model carries int64, the admin
+-- IS_ACTIVE is SMALLINT rather than BOOLEAN, though Postgres has a boolean type
+-- that would fit: the flag state is an integer everywhere above this column —
+-- the Go model carries int64, the admin
 -- API accepts and returns 1/0, and only the KV payload is a real boolean (see
 -- "the int/bool trap" in README.md). Switching the column alone would move that
 -- conversion into the driver and leave the API contract unchanged, which buys

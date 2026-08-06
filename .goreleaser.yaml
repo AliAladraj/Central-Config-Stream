@@ -29,10 +29,10 @@ builds:
       # Not an optimisation — it is what makes cross-compiling from one runner
       # possible at all. The Postgres driver is pure Go (jackc/pgx/v5) and SQLite
       # is modernc.org/sqlite, so no C toolchain is involved and a linux/amd64
-      # runner can emit a darwin/arm64 binary. The claim survived the port off
-      # Oracle unchanged, and was re-checked by cross-compiling all four targets
-      # against pgx. CONTRIBUTING.md says the same thing under Prerequisites,
-      # and the Dockerfile builds this way already.
+      # runner can emit a darwin/arm64 binary. That holds only while every
+      # dependency stays cgo-free, so a new one that is not turns all four
+      # cross-compiles red here. CONTRIBUTING.md says the same thing under
+      # Prerequisites, and the Dockerfile builds this way already.
       - CGO_ENABLED=0
     goos: [linux, darwin]
     goarch: [amd64, arm64]

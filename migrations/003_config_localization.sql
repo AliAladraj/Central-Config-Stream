@@ -29,10 +29,11 @@ CREATE TABLE CONFIG_LOCALIZATION (
 
 -- lookup path used by GET /localization/lookup/{msId}/{envId}/{locale}
 --
--- Kept as it was under Oracle, but be aware of what it is: UQ_LOC_SERVICE_ENV_LOCALE
--- above is backed by an index on exactly these three columns in this order, so
--- this one is redundant and only costs write amplification. It stays because
--- the repositories' SQL and internal/database/sqlite.go both name it and this
--- port changes dialect, not shape. Dropping it is a separate, deliberate change.
+-- Be aware of what this index is: UQ_LOC_SERVICE_ENV_LOCALE above is backed by
+-- an index on exactly these three columns in this order, so this one is
+-- redundant and only costs write amplification. It stays because
+-- internal/database/sqlite.go creates it too and 007 reasons about its column
+-- order, so dropping it means changing all three together — a separate,
+-- deliberate change rather than a tidy-up.
 CREATE INDEX IX_LOC_SERVICE_ENV_LOCALE
     ON CONFIG_LOCALIZATION (MICROSERVICE_ID, ENVIRONMENT_ID, LOCALE);

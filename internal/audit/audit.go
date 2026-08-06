@@ -50,14 +50,13 @@ type Filter struct {
 	Offset       int
 }
 
-// MaxStoredBody bounds the recorded body. It is a byte budget, which under
-// Oracle had to match a column declared VARCHAR2(4000 BYTE) exactly. Postgres
-// measures REQUEST_BODY's VARCHAR(4000) in characters, so the byte budget is
-// now merely conservative: a body of multi-byte characters is truncated earlier
-// than the column requires, never later. That is the safe direction to be wrong
-// in — this insert is on the request path, and a body the column rejects is a
-// failed INSERT rather than a shortened row. The headroom covers the truncation
-// marker.
+// MaxStoredBody bounds the recorded body. It is a byte budget, while
+// REQUEST_BODY's VARCHAR(4000) is measured in characters, so the budget is
+// deliberately conservative: a body of multi-byte characters is truncated
+// earlier than the column requires, never later. That is the safe direction to
+// be wrong in — this insert is on the request path, and a body the column
+// rejects is a failed INSERT rather than a shortened row. The headroom covers
+// the truncation marker.
 const MaxStoredBody = 3800
 
 const (

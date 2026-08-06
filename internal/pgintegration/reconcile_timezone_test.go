@@ -44,17 +44,17 @@ func backdateSeededRows(t *testing.T, s *stack) {
 
 // The incremental reconcile window is the reason UPDATED_AT is TIMESTAMPTZ, and
 // it is the query whose failure is silent: a broken window means configuration
-// that quietly stops converging, not a failed request. Under Oracle the column
-// was timezone-naive and the comparison had to be wrapped in a FROM_TZ/AT TIME
-// ZONE conversion that nothing ever ran; the port removed the wrapper by
-// changing the column type, and this is the test that says the removal was
-// safe.
+// that quietly stops converging, not a failed request. TIMESTAMPTZ stores an
+// instant, so the window is a plain comparison against a bound time.Time. A
+// timezone-naive column would need that bind converted through the session's
+// zone to mean anything, and without the conversion would silently match the
+// wrong rows whenever the session is not UTC — which is what this test pins.
 //
 // It runs the whole thing on a session whose TimeZone is not UTC, because that
-// is the only configuration in which the bug is visible at all. A CI runner is
-// UTC, a developer's Docker container is UTC, and a production database is
-// whatever the DBA set — so a suite that only ever ran in UTC would have gone
-// green against the naive column too.
+// is the only configuration in which that failure is visible at all. A CI
+// runner is UTC, a developer's Docker container is UTC, and a production
+// database is whatever the DBA set — so a suite that only ever ran in UTC would
+// go green against a naive column too.
 func TestReconcileWindowIgnoresTheSessionTimeZone(t *testing.T) {
 	dsnOrSkip(t) // so the parent skips too, rather than passing on skipped subtests
 	for _, zone := range nonUTCZones {

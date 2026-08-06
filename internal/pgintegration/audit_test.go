@@ -192,11 +192,11 @@ func TestAuditStoreInsertAndList(t *testing.T) {
 }
 
 // The audit insert is on the request path: a body the column rejects is a failed
-// INSERT, not a shortened row. audit.MaxStoredBody is a byte budget inherited
-// from Oracle's VARCHAR2(4000 BYTE); Postgres measures VARCHAR(4000) in
-// characters instead, so the budget is now merely conservative — and the
-// direction of that "merely" is worth pinning, because a multi-byte body at the
-// byte cap is the case that would have overflowed the old column.
+// INSERT, not a shortened row. audit.MaxStoredBody is a byte budget, while
+// REQUEST_BODY's VARCHAR(4000) counts characters, so the budget is deliberately
+// conservative — and that is worth pinning at both ends of the encoding, since
+// the two units sit furthest apart for a multi-byte body and coincide for an
+// ASCII one. The column has to take the row either way.
 func TestAuditStoreAcceptsABodyAtTheStoredCap(t *testing.T) {
 	s := newStack(t)
 	store := audit.NewStore(s.DB, "postgres")

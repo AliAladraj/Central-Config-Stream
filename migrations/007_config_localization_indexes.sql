@@ -8,5 +8,5 @@
 CREATE INDEX IX_LOC_ENVIRONMENT ON CONFIG_LOCALIZATION (ENVIRONMENT_ID);
 
 -- The reconciler's incremental window (WHERE UPDATED_AT >= $1). See the
--- TIMESTAMPTZ note in 001 for why that bind no longer needs converting.
+-- TIMESTAMPTZ note in 001 for why that bind needs no conversion.
 CREATE INDEX IX_LOC_UPDATED_AT ON CONFIG_LOCALIZATION (UPDATED_AT);

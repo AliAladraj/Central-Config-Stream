@@ -59,8 +59,8 @@ func TestMigrationsCreateTheWholeSchema(t *testing.T) {
 }
 
 // UPDATED_AT and OCCURRED_AT are TIMESTAMPTZ and not TIMESTAMP, and that is the
-// one type choice in migrations/001 that fixes a live bug rather than
-// translating a spelling: a naive column stores whatever wall clock the session
+// one type choice in migrations/001 that prevents a live bug rather than merely
+// naming a type: a naive column stores whatever wall clock the session
 // happens to be in, so the reconciler's `UPDATED_AT >= $1` against a bound
 // instant is silently wrong by the session's whole UTC offset. The behavioural
 // consequence is pinned by TestReconcileWindowIgnoresTheSessionTimeZone; this

@@ -28,11 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    # PostgreSQL is the production source of truth, and until this container
-    # existed no gate ever stood one up: every test ran against the SQLite
-    # mirror, so the storage path a deployment actually uses was the one path
-    # nothing exercised (docs/PRODUCTION_READINESS.md §3.1 and §3.6). That gap
-    # was expensive to close under Oracle and costs seconds here.
+    # PostgreSQL is the production source of truth. Without this container every
+    # test would run against the SQLite mirror, leaving the storage path a
+    # deployment actually uses as the one path no gate exercises
+    # (docs/PRODUCTION_READINESS.md §3.1 and §3.6). A throwaway container costs
+    # seconds, which is the whole argument for standing one up here.
     #
     # internal/pgintegration applies migrations/*.sql into a schema of its own
     # per test, so this container starts empty and nothing has to prepare it.

@@ -5,11 +5,10 @@
 // hand-written mirror of migrations/ (internal/database/sqlite.go), and it
 // differs from the real thing in the three places that have historically
 // carried the bugs: bind syntax, the pagination clause, and how a timestamp is
-// stored and compared. Until this package existed, the storage path a
-// deployment actually uses was the one path no test and no CI gate touched —
-// docs/PRODUCTION_READINESS.md §3.1 and §3.6 said so for the project's whole
-// life. It was an expensive gap to close under Oracle. It is cheap under
-// Postgres, which is why it is closed here.
+// stored and compared. Without this package the storage path a deployment
+// actually uses would be the one path no test and no CI gate touched, which is
+// the gap docs/PRODUCTION_READINESS.md §3.1 and §3.6 bound. A throwaway
+// Postgres container costs seconds, so there is no reason to leave it open.
 //
 // # Why one package rather than a file per domain
 //

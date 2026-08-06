@@ -59,13 +59,10 @@ func awkwardDocument(t *testing.T) string {
 }
 
 // A settings tree has to come back out of the database exactly as it went in.
-// Under Oracle this was the CLOB-binding problem — go-ora sent a Go string as
-// VARCHAR2 and a document this size overflowed it outright — and the fix,
-// database.CLOB, never once ran against a real driver
-// (docs/PRODUCTION_READINESS.md §3.1). Postgres takes a plain string into a
-// TEXT column and needs no wrapper at all, so what is left to prove is that the
-// bytes survive: the write, the read-back by id, the list, and the reconcile
-// sweep that feeds the publisher.
+// A document this size binds as an ordinary Go string into a TEXT column, with
+// no size-specific wrapper anywhere in the path to get wrong, so what there is
+// to prove is that the bytes survive every hop they take: the write, the
+// read-back by id, the list, and the reconcile sweep that feeds the publisher.
 func TestLargeSettingsDocumentRoundTripsByteIdentically(t *testing.T) {
 	s := newStack(t)
 	repo := microconfig.NewPostgresRepository(s.DB)

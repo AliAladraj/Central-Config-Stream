@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: central-config admin API
-  version: 1.0.0
+  version: 0.1.0
   summary: The control plane's HTTP admin API — the only way configuration is written.
   description: |-
     This is the **control plane**. Admins and deploy pipelines write here; the
@@ -54,8 +54,11 @@ info:
 
     The API carries no version of its own — nothing in the service negotiates or
     advertises one, and `SERVICE_VERSION` labels the binary rather than the
-    contract. `info.version` above is this document's, and it moves when the
-    routes do.
+    contract. `info.version` above tracks the release these routes ship in,
+    because this document is one of the two contracts the project's version
+    number is read against ([`RELEASING.md`](RELEASING.md); the other is
+    `CONSUMER_CONTRACT.md`). It says `0.1.0` rather than `1.0.0` for the reason
+    the project does: nothing is promised across a `0.y` bump.
   license:
     name: MIT
     identifier: MIT

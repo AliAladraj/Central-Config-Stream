@@ -500,6 +500,7 @@ deploying it.
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to build, test and lint, and the ~45 sites a new config domain touches |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | cutting a release: finalising the changelog, tagging, and checking what the tag produced |
 | [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and what is in scope |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | what taking part here asks of everyone, and the private channel for reporting a problem |
 | [`CHANGELOG.md`](CHANGELOG.md) | what each release changed, written as capability rather than commit history |
 
 Oracle DDL for every table is in [`migrations/`](migrations/).

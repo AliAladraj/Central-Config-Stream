@@ -2,7 +2,7 @@
 # admin write, the write-through to KV, the reconcile sweep and the consumer's
 # cache are four places a value can be wrong in different ways. The fields below
 # are the ones that say which of the four you are looking at — the commit,
-# because there are no releases; the driver, because the Oracle SQL is never
+# because a fix is written against one; the driver, because Oracle SQL is never
 # exercised by tests; the JetStream answer, because a server without it cannot
 # distribute anything; and where the value stopped, because the dual write is
 # not transactional and that is the most common shape of a real report.
@@ -29,9 +29,10 @@ body:
     attributes:
       label: Commit
       description: >-
-        Output of `git rev-parse HEAD`. There are no releases and no tags: `master` is the only
-        supported line, so the commit is the only version identifier this project has — see
-        "Supported versions" in `SECURITY.md`.
+        Output of `git rev-parse HEAD`, or the `--version` line if you are running a released
+        binary or image — it carries the version, the short commit and the build date. The
+        supported line is the latest release plus `main`; see "Supported versions" in
+        `SECURITY.md`.
       placeholder: 4f1c0a9e2b7d5f3a1c8e0b6d4a2f9c7e5b3d1a08
     validations:
       required: true

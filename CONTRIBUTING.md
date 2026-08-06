@@ -12,6 +12,11 @@ list is the single most useful thing in this file, because roughly half of the
 places it names fail at *runtime* rather than at compile time — you can ship a
 domain that builds, passes review and quietly never reaches a consumer.
 
+Taking part at all — issues, pull requests, review — means
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) applies. It is the Contributor
+Covenant, and it names a private channel for reporting a problem, because the
+only other one this project has is a world-readable issue tracker.
+
 ---
 
 ## Prerequisites
@@ -196,24 +201,25 @@ reasoning is often the only record of what the code is defending against.
 
 ### On test coverage
 
-Coverage across the three domains is uneven, and it is worth knowing which side
-of the line you are on:
+The three config domains carry the same three test files each, so there is no
+thinner one to match by accident:
 
 | Package | What exists |
 |---|---|
-| `internal/flagsconfig` | service, handler and SQLite repository tests — the fullest coverage in the repository |
-| `internal/microconfig` | service tests only |
-| `internal/localization` | service tests only |
+| `internal/flagsconfig` | service, handler and SQLite repository tests |
+| `internal/microconfig` | service, handler and SQLite repository tests |
+| `internal/localization` | service, handler and SQLite repository tests |
 | `internal/app` | auth and scope middleware, read scoping, rate limiting, audit, liveness, observability, reconcile partial/prune, end-to-end stack |
 | `internal/messaging` | keys, publisher (including skip and revision conflict), reconciler (prune, refusal, mid-sweep writes) |
 | `pkg/configclient` | scoping and a full integration test against embedded JetStream |
 
-`flagsconfig` is the pattern to copy: `service_test.go` for validation and
-publish behaviour, `handler_test.go` for status-code mapping,
-`repository_sqlite_test.go` for the SQL. **New work should not make the
-imbalance worse** — if you are changing `microconfig` or `localization`, that is
-the moment to add the handler or repository test that is missing rather than
-matching the thinner standard.
+`flagsconfig` is still the one to read first, because the split is the same in
+all three: `service_test.go` for validation and publish behaviour,
+`handler_test.go` for status-code mapping, `repository_sqlite_test.go` for the
+SQL. A fourth domain gets the same three files. **What none of them cover is
+Oracle** — every repository test runs against SQLite, so the Oracle SQL is
+verified by compilation and nothing else (`docs/PRODUCTION_READINESS.md` §3.1),
+and that is the gap to declare in a pull request rather than to assume away.
 
 ---
 

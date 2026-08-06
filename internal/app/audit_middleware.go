@@ -59,7 +59,7 @@ type auditRecorder interface {
 // connection pool and bury the real trail in noise.
 //
 // The insert deliberately cannot fail the request: it happens after the change
-// has already been committed to Oracle and published to KV, so returning an
+// has already been committed to the database and published to KV, so returning an
 // error would report a failure that did not happen. Same philosophy as the KV
 // publish path, which logs and lets the reconciler heal.
 func auditWrites(rec auditRecorder, routed func(*http.Request) bool, next http.Handler) http.Handler {

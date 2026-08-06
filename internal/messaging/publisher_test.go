@@ -234,7 +234,7 @@ func TestPublishSkipsIdenticalRawValues(t *testing.T) {
 	}
 }
 
-// Skipping must never cost the healing property: if KV disagrees with Oracle —
+// Skipping must never cost the healing property: if KV disagrees with the database —
 // hand-edited, restored from an old snapshot — the next publish has to fix it.
 func TestPublishCorrectsDrift(t *testing.T) {
 	pub, ctx := newTestPublisher(t)
@@ -270,7 +270,7 @@ func TestPublishCorrectsDrift(t *testing.T) {
 }
 
 // flagsSource republishes a fixed set of flags, standing in for the app-layer
-// reconcile source (which reads them from Oracle) without importing it.
+// reconcile source (which reads them from the database) without importing it.
 type flagsSource struct{ values map[string]string }
 
 func (s *flagsSource) Name() string   { return "flags-sweep" }

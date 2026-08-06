@@ -3,7 +3,7 @@
 // A microservice imports this to read configuration without ever touching the
 // database. It warms an in-memory cache from JetStream KV, keeps it live with a
 // Watch, and serves reads from memory (no network per read, survives NATS
-// blips). Oracle remains the source of truth.
+// blips). The central-config database remains the source of truth.
 //
 // Scope: set Options.MicroserviceID. The client then watches only the keys the
 // service actually needs — every flag in its environment (flags are env-wide by

@@ -24,7 +24,7 @@ var (
 		"KV key deletions that failed, by bucket.")
 )
 
-// Reconciler. Its whole job is to converge KV on Oracle, so what matters is
+// Reconciler. Its whole job is to converge KV on the database, so what matters is
 // that cycles keep completing and how much drift each one had to repair.
 var (
 	ReconcileCycles = NewCounter("centralconfig_reconcile_cycles_total",
@@ -56,7 +56,7 @@ var (
 		"Requests whose handler panicked.")
 )
 
-// Database — Oracle in production, SQLite in the local stack.
+// Database — PostgreSQL in production, SQLite in the local stack.
 var (
 	DBUp = NewGauge("centralconfig_db_up",
 		"1 when the last health-check ping succeeded, 0 otherwise.")

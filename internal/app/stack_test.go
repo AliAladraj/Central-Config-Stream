@@ -79,7 +79,7 @@ func TestSQLiteStackEndToEnd(t *testing.T) {
 		return ok && v == "on"
 	})
 
-	// Admin write -> Oracle-equivalent DB -> KV publish -> consumer memory.
+	// Admin write -> DB -> KV publish -> consumer memory.
 	body := `{"id":100,"value":"canary","enabled":0}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
 		api.URL+"/flags/values", strings.NewReader(body))

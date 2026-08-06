@@ -44,8 +44,8 @@ func TestRedactCoversCredentialFieldNames(t *testing.T) {
 	}{
 		{"authorization", "Bearer prod-admin-token"},
 		{"Authorization", "Bearer prod-admin-token"},
-		{"connectionString", "oracle://svc:Hunter2@prod-db:1521/ORCL"},
-		{"connection_string", "oracle://svc:Hunter2@prod-db:1521/ORCL"},
+		{"connectionString", "mongodb://svc:Hunter2@prod-db:27017/app"},
+		{"connection_string", "mongodb://svc:Hunter2@prod-db:27017/app"},
 		{"connString", "Server=prod;Password=Hunter2"},
 		{"conn_string", "Server=prod;Password=Hunter2"},
 		{"dsn", "postgres://svc:Hunter2@prod-db:5432/app"},

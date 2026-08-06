@@ -1,0 +1,105 @@
+# What a `v*` tag turns into: the two commands, cross-compiled for the four
+# platforms anyone is likely to run them on, one archive per binary per platform
+# and a checksums file beside them.
+#
+# The container image is deliberately not built here. GoReleaser can do it, but
+# the Dockerfile in this repository already knows how to assemble the distroless
+# runtime stage, the non-root user and the writable data directory; expressing
+# that a second time as a `dockers:` block would be a second place for the image
+# to drift from what `docker build .` produces locally.
+# .github/workflows/release.yml builds it with buildx from that same Dockerfile.
+version: 2
+
+# The project is central-config even though the repository is
+# Central-Config-Stream. This name is what archive and checksum filenames are
+# built from, so it is the one people type.
+project_name: central-config
+
+before:
+  hooks:
+    # So a run on a cold module cache fails at the download, with the module
+    # path in the error, rather than part-way through the fourth cross-compile.
+    - go mod download
+
+builds:
+  - id: central-config
+    main: ./cmd/central-config
+    binary: central-config
+    env:
+      # Not an optimisation — it is what makes cross-compiling from one runner
+      # possible at all. The Postgres driver is pure Go (jackc/pgx/v5) and SQLite
+      # is modernc.org/sqlite, so no C toolchain is involved and a linux/amd64
+      # runner can emit a darwin/arm64 binary. That holds only while every
+      # dependency stays cgo-free, so a new one that is not turns all four
+      # cross-compiles red here. CONTRIBUTING.md says the same thing under
+      # Prerequisites, and the Dockerfile builds this way already.
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    # The same three -X paths the Makefile and the Dockerfile write, so a binary
+    # unpacked from a release archive answers `--version` exactly the way one
+    # from `make build` does. `.Summary` is `git describe --tags --always
+    # --dirty`, which is what the Makefile's VERSION defaults to — on the tagged
+    # commit it is the tag itself, and on a snapshot it says how far past the
+    # tag the build is instead of quietly claiming to be the tag.
+    #
+    # -s -w strips the symbol and DWARF tables, as the Dockerfile does. Nothing
+    # here is debugged with a downloaded release binary; a stack trace from a
+    # panic still carries function names and line numbers.
+    ldflags: &ldflags
+      - -s -w
+      - -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Version={{ .Summary }}
+      - -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Date={{ .Date }}
+
+  - id: testconsole
+    main: ./cmd/testconsole
+    binary: testconsole
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+
+archives:
+  # One archive per binary rather than GoReleaser's default of both together.
+  # They are not a pair: the service is what gets deployed, and the console is a
+  # local harness that plays a consuming microservice. Someone rolling out
+  # central-config should not have to download the console to do it.
+  - id: central-config
+    ids: [central-config]
+    name_template: 'central-config_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: &archive_files
+      - LICENSE
+      - README.md
+
+  # The console binary ships alone, without web/. The React bundle is built by
+  # webui/ and is gitignored, so it is in neither this archive nor the source
+  # tree; with no web/ beside it the console still starts, serves /api/state and
+  # /api/events, and answers the browser with a page saying the UI has not been
+  # built rather than a bare 404. Building it needs Node, which is why it is not
+  # in here — see the release notes template in docs/RELEASING.md.
+  - id: testconsole
+    ids: [testconsole]
+    name_template: 'testconsole_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: *archive_files
+
+checksum:
+  name_template: checksums.txt
+
+# GoReleaser's generated commit list is switched off because CHANGELOG.md is
+# already the answer to "what changed", written as capability rather than commit
+# history. release.yml extracts this tag's section from it and passes the result
+# as --release-notes, so the GitHub release page and the file in the repository
+# cannot disagree.
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: ErasedKyte
+    name: Central-Config-Stream
+  # `auto` reads the tag: v0.2.0-rc.1 is marked a pre-release, v0.2.0 is not.
+  # That is also what decides whether the container image gets the `latest` tag
+  # in release.yml, so the two stay consistent by looking at the same thing.
+  prerelease: auto

@@ -1,5 +1,5 @@
 // Package app is the assembly point: it reads configuration from the
-// environment, picks the Oracle or SQLite repositories, builds the domain
+// environment, picks the Postgres or SQLite repositories, builds the domain
 // services and HTTP handlers, registers the routes behind the auth, token
 // scope, rate limit and audit middleware, and owns the server's lifecycle.
 //
@@ -143,7 +143,7 @@ func NewApp(cfg *Config) (*App, error) {
 		TLSConfig:         tlsConfig(),
 	}
 
-	// Reconciler: republish Oracle -> KV on startup + interval to heal drift.
+	// Reconciler: republish the database -> KV on startup + interval to heal drift.
 	if cfg.PublishEnabled {
 		rec := messaging.NewReconciler(cfg.ReconcileInterval, pub,
 			&flagsReconcileSource{repo: flagsRepo},
@@ -156,30 +156,30 @@ func NewApp(cfg *Config) (*App, error) {
 	return app, nil
 }
 
-// openDB dials the configured backend. Oracle is the production source of
+// openDB dials the configured backend. PostgreSQL is the production source of
 // truth; sqlite exists only for the local test stack (deploy/compose).
 func openDB(cfg *Config) (*sql.DB, error) {
 	switch strings.ToLower(cfg.DBDriver) {
-	case "", "oracle":
-		db, err := database.NewOracleDBWithPool(cfg.DBConnString, database.PoolOptions{
+	case "", "postgres":
+		db, err := database.NewPostgresDBWithPool(cfg.DBConnString, database.PoolOptions{
 			MaxOpenConns:    cfg.DBMaxOpenConns,
 			MaxIdleConns:    cfg.DBMaxIdleConns,
 			ConnMaxLifetime: cfg.DBConnMaxLifetime,
 			ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("create oracle db: %w", err)
+			return nil, fmt.Errorf("create postgres db: %w", err)
 		}
 		return db, nil
 	case "sqlite":
-		appLog.Warn("local test stack, Oracle is bypassed", slog.String("db.driver", "sqlite"))
+		appLog.Warn("local test stack, PostgreSQL is bypassed", slog.String("db.driver", "sqlite"))
 		db, err := database.NewSQLiteDB(cfg.DBConnString)
 		if err != nil {
 			return nil, fmt.Errorf("create sqlite db: %w", err)
 		}
 		return db, nil
 	default:
-		return nil, fmt.Errorf("unknown DB_DRIVER %q (want oracle or sqlite)", cfg.DBDriver)
+		return nil, fmt.Errorf("unknown DB_DRIVER %q (want postgres or sqlite)", cfg.DBDriver)
 	}
 }
 
@@ -206,9 +206,9 @@ func newRepositories(cfg *Config, db *sql.DB) (flagsRepository, microRepository,
 			microconfig.NewSQLiteRepository(db),
 			localization.NewSQLiteRepository(db)
 	}
-	return flagsconfig.NewOracleRepository(db),
-		microconfig.NewOracleRepository(db),
-		localization.NewOracleRepository(db)
+	return flagsconfig.NewPostgresRepository(db),
+		microconfig.NewPostgresRepository(db),
+		localization.NewPostgresRepository(db)
 }
 
 // setupMessaging connects to NATS and provisions the KV buckets. A URL that
@@ -304,11 +304,11 @@ func livezHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"alive"}` + "\n"))
 }
 
-// ---- Reconcile source adapters (bridge Oracle repos to messaging.ReconcileSource) ----
+// ---- Reconcile source adapters (bridge the repos to messaging.ReconcileSource) ----
 
 // The reconcile sources need the list-all method that the domain Repository
 // interfaces do not expose, so each declares the narrow interface it needs.
-// Any driver-specific repository (Oracle in production, SQLite in the local
+// Any driver-specific repository (Postgres in production, SQLite in the local
 // test stack) satisfies these.
 
 type flagsLister interface {

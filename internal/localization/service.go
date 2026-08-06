@@ -72,7 +72,7 @@ func (s *Service) UpdateLocalization(ctx context.Context, req Localization) (*Lo
 		return nil, err
 	}
 
-	// 1. Oracle is the source of truth.
+	// 1. The database is the source of truth.
 	updated, err := s.repo.UpdateLocalization(ctx, req)
 	if err != nil {
 		return nil, err
@@ -104,7 +104,7 @@ func (s *Service) CreateLocalization(ctx context.Context, req Localization) (*Lo
 		return nil, err
 	}
 
-	// 1. Oracle is the source of truth.
+	// 1. The database is the source of truth.
 	created, err := s.repo.CreateLocalization(ctx, req)
 	if err != nil {
 		return nil, err

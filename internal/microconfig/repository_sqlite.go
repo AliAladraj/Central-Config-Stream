@@ -16,7 +16,7 @@ import (
 const sqliteTimeLayout = "2006-01-02 15:04:05"
 
 // SQLiteRepository backs the local test stack (see internal/database/sqlite.go).
-// Same tables and columns as Oracle; only the bind syntax differs (? vs :1).
+// Same tables and columns as PostgreSQL; only the bind syntax differs (? vs $1).
 type SQLiteRepository struct {
 	db *sql.DB
 }

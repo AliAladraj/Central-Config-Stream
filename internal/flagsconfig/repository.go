@@ -11,15 +11,6 @@ import (
 	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
 
-// sinceWindowUTC converts the bound reconcile window into the session time zone
-// before comparing it. UPDATED_AT is a plain TIMESTAMP written by
-// CURRENT_TIMESTAMP, so it carries the session's local wall clock, while the
-// bound value comes from a Go UTC clock — on a non-UTC session comparing them
-// directly matches the wrong rows, or none at all, and reports success either
-// way. Converting the bound value rather than the column leaves UPDATED_AT bare
-// on the left-hand side, so its index still serves the window.
-const sinceWindowUTC = `CAST(FROM_TZ(CAST(:1 AS TIMESTAMP), 'UTC') AT TIME ZONE SESSIONTIMEZONE AS TIMESTAMP)`
-
 type Repository interface {
 	GetFlagsByID(ctx context.Context, id int64) (*Flag, error)
 	GetFlagValueByID(ctx context.Context, id int64) (*FlagValue, error)
@@ -40,19 +31,19 @@ type Repository interface {
 	DeleteFlagValue(ctx context.Context, id int64) (*DeletedFlagValue, error)
 }
 
-type OracleRepository struct {
+type PostgresRepository struct {
 	db *sql.DB
 }
 
-func NewOracleRepository(db *sql.DB) *OracleRepository {
-	return &OracleRepository{db: db}
+func NewPostgresRepository(db *sql.DB) *PostgresRepository {
+	return &PostgresRepository{db: db}
 }
 
-func (r *OracleRepository) GetFlagsByID(ctx context.Context, id int64) (*Flag, error) {
+func (r *PostgresRepository) GetFlagsByID(ctx context.Context, id int64) (*Flag, error) {
 	const query = `
 		SELECT ID, FLAG_KEY, IS_ACTIVE, UPDATED_AT
 		FROM CONFIG_FLAG
-		WHERE ID = :1
+		WHERE ID = $1
 	`
 
 	var cfg Flag
@@ -74,11 +65,11 @@ func (r *OracleRepository) GetFlagsByID(ctx context.Context, id int64) (*Flag, e
 	return &cfg, nil
 }
 
-func (r *OracleRepository) GetFlagValueByID(ctx context.Context, id int64) (*FlagValue, error) {
+func (r *PostgresRepository) GetFlagValueByID(ctx context.Context, id int64) (*FlagValue, error) {
 	const query = `
 		SELECT ID, ENVIRONMENT_ID, FLAG_ID, ENABLED, VALUE, UPDATED_AT
 		FROM CONFIG_FLAG_VALUE
-		WHERE ID = :1
+		WHERE ID = $1
 	`
 
 	var val FlagValue
@@ -102,20 +93,20 @@ func (r *OracleRepository) GetFlagValueByID(ctx context.Context, id int64) (*Fla
 	return &val, nil
 }
 
-func (r *OracleRepository) UpdateFlagValue(ctx context.Context, input FlagValue) (*FlagValue, string, error) {
+func (r *PostgresRepository) UpdateFlagValue(ctx context.Context, input FlagValue) (*FlagValue, string, error) {
 	const query = `
 		UPDATE CONFIG_FLAG_VALUE
-		SET VALUE = :1,
-		    ENABLED = :2,
+		SET VALUE = $1,
+		    ENABLED = $2,
 		    UPDATED_AT = CURRENT_TIMESTAMP
-		WHERE ID = :3
+		WHERE ID = $3
 	`
 
 	// Optimistic concurrency is opt-in: only when the caller told us which
 	// version it read does the UPDATE become conditional.
 	stmt, args := query, []any{input.Value, input.Enabled, input.ID}
 	if input.ExpectedUpdatedAt != nil {
-		stmt += ` AND UPDATED_AT = :4`
+		stmt += ` AND UPDATED_AT = $4`
 		args = append(args, *input.ExpectedUpdatedAt)
 	}
 
@@ -138,7 +129,7 @@ func (r *OracleRepository) UpdateFlagValue(ctx context.Context, input FlagValue)
 
 // noRowsErr tells a lost optimistic-concurrency race apart from a missing row:
 // a guarded UPDATE that matches nothing cannot distinguish the two by itself.
-func (r *OracleRepository) noRowsErr(ctx context.Context, input FlagValue) error {
+func (r *PostgresRepository) noRowsErr(ctx context.Context, input FlagValue) error {
 	if input.ExpectedUpdatedAt == nil {
 		return ErrFlagNotFound
 	}
@@ -150,12 +141,12 @@ func (r *OracleRepository) noRowsErr(ctx context.Context, input FlagValue) error
 
 // getFlagValueWithKey reads back the stored row and its flag key in one round
 // trip, so the publish path does not need a separate CONFIG_FLAG lookup.
-func (r *OracleRepository) getFlagValueWithKey(ctx context.Context, id int64) (*FlagValue, string, error) {
+func (r *PostgresRepository) getFlagValueWithKey(ctx context.Context, id int64) (*FlagValue, string, error) {
 	const query = `
 		SELECT fv.ID, fv.ENVIRONMENT_ID, fv.FLAG_ID, fv.ENABLED, fv.VALUE, fv.UPDATED_AT, f.FLAG_KEY
 		FROM CONFIG_FLAG_VALUE fv
 		JOIN CONFIG_FLAG f ON f.ID = fv.FLAG_ID
-		WHERE fv.ID = :1
+		WHERE fv.ID = $1
 	`
 
 	var val FlagValue
@@ -180,16 +171,16 @@ func (r *OracleRepository) getFlagValueWithKey(ctx context.Context, id int64) (*
 	return &val, flagKey, nil
 }
 
-func (r *OracleRepository) ListFlags(ctx context.Context, filter FlagFilter) ([]Flag, error) {
+func (r *PostgresRepository) ListFlags(ctx context.Context, filter FlagFilter) ([]Flag, error) {
 	query := `SELECT ID, FLAG_KEY, IS_ACTIVE, UPDATED_AT FROM CONFIG_FLAG`
 
 	var args []any
 	if filter.FlagKey != "" {
-		query += ` WHERE FLAG_KEY = :1`
+		query += ` WHERE FLAG_KEY = $1`
 		args = append(args, filter.FlagKey)
 	}
-	query += fmt.Sprintf(` ORDER BY ID OFFSET :%d ROWS FETCH NEXT :%d ROWS ONLY`, len(args)+1, len(args)+2)
-	args = append(args, filter.Offset, filter.Limit)
+	query += fmt.Sprintf(` ORDER BY ID LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	args = append(args, filter.Limit, filter.Offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -200,10 +191,10 @@ func (r *OracleRepository) ListFlags(ctx context.Context, filter FlagFilter) ([]
 	return scanFlags(rows)
 }
 
-func (r *OracleRepository) CreateFlag(ctx context.Context, input Flag) (*Flag, error) {
+func (r *PostgresRepository) CreateFlag(ctx context.Context, input Flag) (*Flag, error) {
 	// The unique key is checked here rather than left to the constraint: a
 	// driver-specific violation code cannot be mapped to a 409 portably.
-	taken, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_FLAG WHERE FLAG_KEY = :1`, input.FlagKey)
+	taken, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_FLAG WHERE FLAG_KEY = $1`, input.FlagKey)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +204,7 @@ func (r *OracleRepository) CreateFlag(ctx context.Context, input Flag) (*Flag, e
 
 	const insert = `
 		INSERT INTO CONFIG_FLAG (FLAG_KEY, IS_ACTIVE, UPDATED_AT)
-		VALUES (:1, :2, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.FlagKey, input.IsActive); err != nil {
 		// The check above is a fast path, not a lock: two concurrent creates
@@ -229,11 +220,11 @@ func (r *OracleRepository) CreateFlag(ctx context.Context, input Flag) (*Flag, e
 	return r.getFlagByKey(ctx, input.FlagKey)
 }
 
-func (r *OracleRepository) getFlagByKey(ctx context.Context, flagKey string) (*Flag, error) {
+func (r *PostgresRepository) getFlagByKey(ctx context.Context, flagKey string) (*Flag, error) {
 	const query = `
 		SELECT ID, FLAG_KEY, IS_ACTIVE, UPDATED_AT
 		FROM CONFIG_FLAG
-		WHERE FLAG_KEY = :1
+		WHERE FLAG_KEY = $1
 	`
 
 	var cfg Flag
@@ -250,7 +241,7 @@ func (r *OracleRepository) getFlagByKey(ctx context.Context, flagKey string) (*F
 // DeleteFlag drops the flag and its values in one transaction. Doing it in two
 // statements outside a transaction would leave orphaned value rows behind if the
 // second one failed.
-func (r *OracleRepository) DeleteFlag(ctx context.Context, id int64) ([]DeletedFlagValue, error) {
+func (r *PostgresRepository) DeleteFlag(ctx context.Context, id int64) ([]DeletedFlagValue, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin delete flag: %w", err)
@@ -258,7 +249,7 @@ func (r *OracleRepository) DeleteFlag(ctx context.Context, id int64) ([]DeletedF
 	defer func() { _ = tx.Rollback() }()
 
 	var flagKey string
-	err = tx.QueryRowContext(ctx, `SELECT FLAG_KEY FROM CONFIG_FLAG WHERE ID = :1`, id).Scan(&flagKey)
+	err = tx.QueryRowContext(ctx, `SELECT FLAG_KEY FROM CONFIG_FLAG WHERE ID = $1`, id).Scan(&flagKey)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrFlagNotFound
@@ -266,15 +257,15 @@ func (r *OracleRepository) DeleteFlag(ctx context.Context, id int64) ([]DeletedF
 		return nil, fmt.Errorf("read flag for delete: %w", err)
 	}
 
-	removed, err := scanDeletedValues(ctx, tx, `SELECT ENVIRONMENT_ID FROM CONFIG_FLAG_VALUE WHERE FLAG_ID = :1`, id, flagKey)
+	removed, err := scanDeletedValues(ctx, tx, `SELECT ENVIRONMENT_ID FROM CONFIG_FLAG_VALUE WHERE FLAG_ID = $1`, id, flagKey)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM CONFIG_FLAG_VALUE WHERE FLAG_ID = :1`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM CONFIG_FLAG_VALUE WHERE FLAG_ID = $1`, id); err != nil {
 		return nil, fmt.Errorf("delete flag values: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM CONFIG_FLAG WHERE ID = :1`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM CONFIG_FLAG WHERE ID = $1`, id); err != nil {
 		return nil, fmt.Errorf("delete flag: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -284,7 +275,7 @@ func (r *OracleRepository) DeleteFlag(ctx context.Context, id int64) ([]DeletedF
 	return removed, nil
 }
 
-func (r *OracleRepository) ListFlagValues(ctx context.Context, filter FlagValueFilter) ([]FlagValueRow, error) {
+func (r *PostgresRepository) ListFlagValues(ctx context.Context, filter FlagValueFilter) ([]FlagValueRow, error) {
 	query := `
 		SELECT fv.ID, fv.ENVIRONMENT_ID, fv.FLAG_ID, f.FLAG_KEY, fv.VALUE, fv.ENABLED, fv.UPDATED_AT
 		FROM CONFIG_FLAG_VALUE fv
@@ -295,17 +286,17 @@ func (r *OracleRepository) ListFlagValues(ctx context.Context, filter FlagValueF
 	var where []string
 	if filter.EnvironmentID > 0 {
 		args = append(args, filter.EnvironmentID)
-		where = append(where, fmt.Sprintf("fv.ENVIRONMENT_ID = :%d", len(args)))
+		where = append(where, fmt.Sprintf("fv.ENVIRONMENT_ID = $%d", len(args)))
 	}
 	if filter.FlagKey != "" {
 		args = append(args, filter.FlagKey)
-		where = append(where, fmt.Sprintf("f.FLAG_KEY = :%d", len(args)))
+		where = append(where, fmt.Sprintf("f.FLAG_KEY = $%d", len(args)))
 	}
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	query += fmt.Sprintf(` ORDER BY fv.ID OFFSET :%d ROWS FETCH NEXT :%d ROWS ONLY`, len(args)+1, len(args)+2)
-	args = append(args, filter.Offset, filter.Limit)
+	query += fmt.Sprintf(` ORDER BY fv.ID LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	args = append(args, filter.Limit, filter.Offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -316,14 +307,14 @@ func (r *OracleRepository) ListFlagValues(ctx context.Context, filter FlagValueF
 	return scanFlagValueRows(rows)
 }
 
-func (r *OracleRepository) CreateFlagValue(ctx context.Context, input FlagValue) (*FlagValue, string, error) {
+func (r *PostgresRepository) CreateFlagValue(ctx context.Context, input FlagValue) (*FlagValue, string, error) {
 	if err := r.checkFlagValueRefs(ctx, input); err != nil {
 		return nil, "", err
 	}
 
 	const insert = `
 		INSERT INTO CONFIG_FLAG_VALUE (ENVIRONMENT_ID, FLAG_ID, ENABLED, VALUE, UPDATED_AT)
-		VALUES (:1, :2, :3, :4, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert, input.EnvironmentID, input.FlagId, input.Enabled, input.Value); err != nil {
 		// The check above is a fast path, not a lock: two concurrent creates
@@ -341,8 +332,8 @@ func (r *OracleRepository) CreateFlagValue(ctx context.Context, input FlagValue)
 // than relying on the foreign keys: a constraint violation arrives as an opaque
 // driver error, and the caller needs to tell "no such environment" apart from
 // "already exists" to pick a status code.
-func (r *OracleRepository) checkFlagValueRefs(ctx context.Context, input FlagValue) error {
-	envs, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_ENVIRONMENTS WHERE ID = :1`, input.EnvironmentID)
+func (r *PostgresRepository) checkFlagValueRefs(ctx context.Context, input FlagValue) error {
+	envs, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_ENVIRONMENTS WHERE ID = $1`, input.EnvironmentID)
 	if err != nil {
 		return err
 	}
@@ -350,7 +341,7 @@ func (r *OracleRepository) checkFlagValueRefs(ctx context.Context, input FlagVal
 		return ErrEnvironmentNotFound
 	}
 
-	flags, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_FLAG WHERE ID = :1`, input.FlagId)
+	flags, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_FLAG WHERE ID = $1`, input.FlagId)
 	if err != nil {
 		return err
 	}
@@ -359,7 +350,7 @@ func (r *OracleRepository) checkFlagValueRefs(ctx context.Context, input FlagVal
 	}
 
 	taken, err := r.count(ctx,
-		`SELECT COUNT(*) FROM CONFIG_FLAG_VALUE WHERE ENVIRONMENT_ID = :1 AND FLAG_ID = :2`,
+		`SELECT COUNT(*) FROM CONFIG_FLAG_VALUE WHERE ENVIRONMENT_ID = $1 AND FLAG_ID = $2`,
 		input.EnvironmentID, input.FlagId)
 	if err != nil {
 		return err
@@ -370,12 +361,12 @@ func (r *OracleRepository) checkFlagValueRefs(ctx context.Context, input FlagVal
 	return nil
 }
 
-func (r *OracleRepository) getFlagValueByEnvAndFlag(ctx context.Context, environmentID, flagID int64) (*FlagValue, string, error) {
+func (r *PostgresRepository) getFlagValueByEnvAndFlag(ctx context.Context, environmentID, flagID int64) (*FlagValue, string, error) {
 	const query = `
 		SELECT fv.ID, fv.ENVIRONMENT_ID, fv.FLAG_ID, fv.ENABLED, fv.VALUE, fv.UPDATED_AT, f.FLAG_KEY
 		FROM CONFIG_FLAG_VALUE fv
 		JOIN CONFIG_FLAG f ON f.ID = fv.FLAG_ID
-		WHERE fv.ENVIRONMENT_ID = :1 AND fv.FLAG_ID = :2
+		WHERE fv.ENVIRONMENT_ID = $1 AND fv.FLAG_ID = $2
 	`
 
 	var val FlagValue
@@ -398,12 +389,12 @@ func (r *OracleRepository) getFlagValueByEnvAndFlag(ctx context.Context, environ
 	return &val, flagKey, nil
 }
 
-func (r *OracleRepository) DeleteFlagValue(ctx context.Context, id int64) (*DeletedFlagValue, error) {
+func (r *PostgresRepository) DeleteFlagValue(ctx context.Context, id int64) (*DeletedFlagValue, error) {
 	const read = `
 		SELECT fv.ENVIRONMENT_ID, f.FLAG_KEY
 		FROM CONFIG_FLAG_VALUE fv
 		JOIN CONFIG_FLAG f ON f.ID = fv.FLAG_ID
-		WHERE fv.ID = :1
+		WHERE fv.ID = $1
 	`
 
 	// The KV key is read before the row goes away — afterwards there is nothing
@@ -417,7 +408,7 @@ func (r *OracleRepository) DeleteFlagValue(ctx context.Context, id int64) (*Dele
 		return nil, fmt.Errorf("read flag value for delete: %w", err)
 	}
 
-	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_FLAG_VALUE WHERE ID = :1`, id)
+	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_FLAG_VALUE WHERE ID = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("delete flag value: %w", err)
 	}
@@ -432,7 +423,7 @@ func (r *OracleRepository) DeleteFlagValue(ctx context.Context, id int64) (*Dele
 	return &removed, nil
 }
 
-func (r *OracleRepository) count(ctx context.Context, query string, args ...any) (int64, error) {
+func (r *PostgresRepository) count(ctx context.Context, query string, args ...any) (int64, error) {
 	var n int64
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count rows: %w", err)
@@ -505,7 +496,7 @@ type ReconcileRow struct {
 // ListAllForReconcile returns flag values joined with their flag key. A zero
 // `since` sweeps every row; otherwise only rows changed at or after `since`,
 // which keeps the periodic reconcile from re-reading the whole table.
-func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.Time) ([]ReconcileRow, error) {
+func (r *PostgresRepository) ListAllForReconcile(ctx context.Context, since time.Time) ([]ReconcileRow, error) {
 	const base = `
 		SELECT fv.ID, fv.ENVIRONMENT_ID, f.FLAG_KEY, fv.ENABLED, fv.VALUE
 		FROM CONFIG_FLAG_VALUE fv
@@ -515,7 +506,12 @@ func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.T
 	query := base
 	var args []any
 	if !since.IsZero() {
-		query = base + ` WHERE fv.UPDATED_AT >= ` + sinceWindowUTC
+		// UPDATED_AT is TIMESTAMPTZ, so the column stores an instant and the
+		// bound instant compares against it correctly whatever the session's
+		// TimeZone is set to. Nothing has to be converted around either side,
+		// which also leaves the column bare so IX_FLAG_VALUE_UPDATED_AT still
+		// serves the window.
+		query = base + ` WHERE fv.UPDATED_AT >= $1`
 		args = append(args, since.UTC())
 	}
 	// A deterministic order matters when the sweep cannot publish every row:

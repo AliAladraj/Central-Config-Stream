@@ -17,11 +17,11 @@ import (
 // has to be able to name.
 var recLog = obs.Logger("reconciler")
 
-// ReconcileSource re-publishes a domain's current Oracle state to KV. Called on
-// startup and on an interval so KV eventually matches Oracle even if a
+// ReconcileSource re-publishes a domain's current database state to KV. Called
+// on startup and on an interval so KV eventually matches the database even if a
 // write-through publish was dropped (the dual-write healing mechanism).
 //
-// Implementations live in the app layer (they read Oracle); messaging stays
+// Implementations live in the app layer (they read the database); messaging stays
 // decoupled from the domains to avoid an import cycle. Resync must be
 // idempotent — the publisher reads before writing, so republishing a value KV
 // already holds is skipped rather than pushed to every consumer.

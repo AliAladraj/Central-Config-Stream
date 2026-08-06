@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sijms/go-ora/v2/network"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The repositories check the natural key before inserting, but that check is a
@@ -34,9 +34,19 @@ func TestIsUniqueViolation(t *testing.T) {
 		t.Error("a wrapped unique violation was not recognised")
 	}
 
-	// ORA-00001 is the Oracle side of the same thing.
-	if !IsUniqueViolation(fmt.Errorf("create flag: %w", network.NewOracleError(1))) {
-		t.Error("ORA-00001 not recognised")
+	// SQLSTATE 23505 is the Postgres side of the same thing. The production
+	// driver cannot be exercised without a server, so the error it would return
+	// is constructed directly — which is exactly why the check is on the code
+	// and not on the message: Message is localised by the server's lc_messages
+	// and names the constraint, so neither is a stable thing to match.
+	pgDup := &pgconn.PgError{
+		Code:                "23505",
+		Message:             `duplicate key value violates unique constraint "uq_flag_key"`,
+		ConstraintName:      "uq_flag_key",
+		SeverityUnlocalized: "ERROR",
+	}
+	if !IsUniqueViolation(fmt.Errorf("create flag: %w", pgDup)) {
+		t.Error("SQLSTATE 23505 not recognised")
 	}
 
 	// Anything else has to stay a 500 rather than being reported as a conflict.
@@ -48,8 +58,14 @@ func TestIsUniqueViolation(t *testing.T) {
 	if IsUniqueViolation(errors.New("connection reset")) {
 		t.Error("an unrelated error was reported as a unique violation")
 	}
-	if IsUniqueViolation(network.NewOracleError(1017)) {
-		t.Error("ORA-01017 was reported as a unique violation")
+	// 23503 is a foreign-key violation and 23502 a not-null one: both are in the
+	// same integrity-constraint class as 23505 and neither is a conflict, so a
+	// prefix match on "23" would turn a genuine 500 into a misleading 409.
+	if IsUniqueViolation(&pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"}) {
+		t.Error("SQLSTATE 23503 was reported as a unique violation")
+	}
+	if IsUniqueViolation(&pgconn.PgError{Code: "23502", Message: "null value in column violates not-null constraint"}) {
+		t.Error("SQLSTATE 23502 was reported as a unique violation")
 	}
 	if IsUniqueViolation(nil) {
 		t.Error("nil was reported as a unique violation")
@@ -57,8 +73,8 @@ func TestIsUniqueViolation(t *testing.T) {
 }
 
 // An unbounded pool lets a slow database plus two replicas plus the reconciler
-// open Oracle sessions until the shared instance refuses new ones, and without
-// a lifetime a session survives a failover as a half-dead connection.
+// open Postgres connections until the server hits max_connections, and without
+// a lifetime a connection survives a failover as a half-dead socket.
 func TestPoolOptionsAreAppliedAndConfigurable(t *testing.T) {
 	db, err := NewSQLiteDB("file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "pool.db")))
 	if err != nil {

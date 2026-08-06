@@ -141,7 +141,7 @@ metric definitions are in `internal/obs/instruments.go`.
 | --- | --- | --- |
 | `centralconfig_kv_publish_attempts_total` | `bucket` | write-through publishes attempted |
 | `centralconfig_kv_publish_success_total` | `bucket` | publishes that reached JetStream |
-| `centralconfig_kv_publish_failures_total` | `bucket` | publishes that failed — the admin write still succeeded, so this is invisible to the caller and to Oracle |
+| `centralconfig_kv_publish_failures_total` | `bucket` | publishes that failed — the admin write still succeeded, so this is invisible to the caller and to the database |
 | `centralconfig_kv_publish_skipped_total` | `bucket` | publishes skipped because KV already held a byte-identical value — in steady state a full sweep should be almost entirely skips, since every real write pushes to every consumer |
 | `centralconfig_kv_delete_failures_total` | `bucket` | key deletions that failed, i.e. a deleted row still being served to consumers |
 | `centralconfig_nats_up` | — | `1` when the KV buckets are provisioned and NATS is connected, `0` otherwise |
@@ -190,7 +190,7 @@ as the process, and both parts of a request line are caller input:
 
 | Metric | Meaning |
 | --- | --- |
-| `centralconfig_db_up` | 1/0 from the last `/health` ping (Oracle in production, SQLite in the local stack) |
+| `centralconfig_db_up` | 1/0 from the last `/health` ping (PostgreSQL in production, SQLite in the local stack) |
 | `centralconfig_db_ping_failures_total` | failed health-check pings |
 
 Note that `centralconfig_db_up` — and `centralconfig_nats_up` with it — only
@@ -211,7 +211,7 @@ point the scraper at `http://<host>:8080/metrics`.
 
 Five, in order of what they would actually catch.
 
-**1. KV publishes are failing — consumers are drifting from Oracle.**
+**1. KV publishes are failing — consumers are drifting from the database.**
 
 ```promql
 sum(rate(centralconfig_kv_publish_failures_total[5m]))
@@ -275,7 +275,7 @@ with `PUBLISH_ENABLED=true`, and remember the gauge only refreshes when
 readiness is probed.
 
 Worth graphing but not alerting: `centralconfig_http_request_duration_seconds`
-p95 by route (Oracle latency shows up here first), and
+p95 by route (database latency shows up here first), and
 `centralconfig_http_requests_total{status="401"}` (a rising 401 rate is either a
 rotated token or somebody probing the admin API).
 

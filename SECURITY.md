@@ -15,11 +15,27 @@ than a public issue.
 
 ## Supported versions
 
-There are no releases or tags. `master` is the only supported line, and a fix
-lands there — there is no backporting to an older commit and no security branch.
+The supported line is the latest release plus `main`. A `v*` tag cuts a release
+— [`docs/RELEASING.md`](docs/RELEASING.md) is how — and a fix lands on `main`
+and goes out in the next one. There is no backporting to an older tag and no
+security branch, so the remedy is always to move forward rather than to wait
+for a patch on the version you happen to be on.
 
-If you are running this, you are running a commit. Say which one in your report
-(`git rev-parse HEAD`); it is the only version identifier that exists.
+Say which build you tested, because a fix is written against a commit rather
+than against a version number. Both binaries answer `--version` now, from the
+linker's stamp alone, before any configuration is read and before the database
+or NATS is dialled — so it works on a machine with neither:
+
+```
+central-config v0.1.0 (commit 1a2b3c4, built 2026-08-12T09:14:02Z)
+```
+
+That line is the whole answer. A build with no stamp says
+`dev (commit none, built unknown)` — which is what a laptop `go build` and a
+`go install` both produce, deliberately, rather than pretending to a version —
+and a plain checkout has no binary to ask; in either case give
+`git rev-parse HEAD` instead. [`internal/buildinfo`](internal/buildinfo) is
+where those three values live.
 
 ## Reporting a vulnerability
 
@@ -51,7 +67,7 @@ honest position and it is worth stating rather than inventing a rota:
   assume the notification was missed and follow up.
 - **An assessment after that**, saying whether the report is accepted, and if so
   roughly how serious it looks and what the fix involves.
-- **A fix on `master` when there is one**, with the advisory published and
+- **A fix on `main` when there is one**, with the advisory published and
   credit to you in it unless you would rather not be named.
 
 There is no service-level agreement, no bounty, and no security team. If you

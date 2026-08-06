@@ -16,8 +16,8 @@ const sqliteTimeLayout = "2006-01-02 15:04:05"
 
 // Store reads and writes CONFIG_AUDIT_LOG. Unlike the domain repositories there
 // is a single implementation: the two statements differ only in bind syntax and
-// pagination clause, so a dialect flag is cheaper than a second file that would
-// have to be kept in sync by hand.
+// how a timestamp is bound, so a dialect flag is cheaper than a second file that
+// would have to be kept in sync by hand.
 type Store struct {
 	db     *sql.DB
 	sqlite bool
@@ -28,20 +28,24 @@ func NewStore(db *sql.DB, driver string) *Store {
 	return &Store{db: db, sqlite: strings.EqualFold(driver, "sqlite")}
 }
 
-// bind renders the n-th placeholder: Oracle wants :1, SQLite wants ?.
+// bind renders the n-th placeholder: Postgres wants $1, SQLite wants ?.
 func (s *Store) bind(n int) string {
 	if s.sqlite {
 		return "?"
 	}
-	return ":" + strconv.Itoa(n)
+	return "$" + strconv.Itoa(n)
 }
 
-// timeArg formats a timestamp the way the column stores it.
+// timeArg formats a timestamp the way the column stores it. SQLite's
+// OCCURRED_AT is text written by CURRENT_TIMESTAMP, so a bound value has to be
+// rendered in the same layout for the range comparison to be a string
+// comparison that means anything; Postgres's is TIMESTAMPTZ, which stores an
+// instant, so a time.Time goes straight through and carries its own offset.
 func (s *Store) timeArg(t time.Time) any {
 	if s.sqlite {
 		return t.UTC().Format(sqliteTimeLayout)
 	}
-	return t.UTC()
+	return t
 }
 
 func (s *Store) Insert(ctx context.Context, e Entry) error {
@@ -54,8 +58,11 @@ func (s *Store) Insert(ctx context.Context, e Entry) error {
 		s.bind(1), s.bind(2), s.bind(3), s.bind(4), s.bind(5),
 		s.bind(6), s.bind(7), s.bind(8), s.bind(9), s.bind(10))
 
-	// Oracle stores the empty string as NULL, so the optional columns are bound
-	// as nullable rather than as "".
+	// The optional columns are bound as nullable rather than as "": a rejected
+	// (401) or unrouted (404) write genuinely knows nothing about its target,
+	// and NULL says that where "" would claim an empty actor or an empty
+	// domain. It also keeps those rows out of the environment-scoped read in
+	// List, where NULL never satisfies IN.
 	_, err := s.db.ExecContext(ctx, query,
 		s.timeArg(e.OccurredAt),
 		nullString(e.Actor),
@@ -119,9 +126,9 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Entry, error) {
 		query += ` ORDER BY ID DESC LIMIT ? OFFSET ?`
 		args = append(args, filter.Limit, filter.Offset)
 	} else {
-		query += fmt.Sprintf(` ORDER BY ID DESC OFFSET :%d ROWS FETCH NEXT :%d ROWS ONLY`,
+		query += fmt.Sprintf(` ORDER BY ID DESC LIMIT $%d OFFSET $%d`,
 			len(args)+1, len(args)+2)
-		args = append(args, filter.Offset, filter.Limit)
+		args = append(args, filter.Limit, filter.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

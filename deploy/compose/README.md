@@ -4,10 +4,11 @@ Runs the whole distribution path on one machine: an admin write hits the HTTP
 API, lands in the database, is written through to a JetStream KV bucket, and is
 pushed to a consuming service that serves it from memory.
 
-The database here is **SQLite, not Oracle** (`DB_DRIVER=sqlite`). It exists so
-the JetStream path can be exercised without an Oracle instance; the schema is
-the same shape, but running this stack does not exercise the Oracle
-repositories at all.
+The database here is **SQLite, not PostgreSQL** (`DB_DRIVER=sqlite`). It exists
+so the JetStream path can be exercised without a Postgres instance; the schema
+is the same shape, but running this stack does not exercise the PostgreSQL
+repositories at all. Those have a suite of their own —
+`internal/pgintegration`, run by `make test-postgres` and by CI.
 
 Everything is seeded into **environment 1 (`dev`)**. Environments 2 (`staging`)
 and 3 (`prod`) exist as rows, but env 3 holds exactly one row — a *disabled*

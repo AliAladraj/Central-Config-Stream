@@ -75,8 +75,9 @@ type buildValue func(cur []byte) (write, compare []byte, err error)
 // skip a full sweep fans a no-op update out to the whole fleet — every
 // consumer's OnChange handler rebuilding clients and resetting log levels for
 // nothing — and burns the bucket's history window on identical revisions. Only
-// exact equality skips: anything else, including a value KV holds that Oracle
-// disagrees with, is still published, so the reconciler keeps healing drift.
+// exact equality skips: anything else, including a value KV holds that the
+// database disagrees with, is still published, so the reconciler keeps healing
+// drift.
 func publish(ctx context.Context, kv jetstream.KeyValue, bucket, key string, build buildValue) (bool, error) {
 	var conflict error
 	for attempt := 0; attempt < publishAttempts; attempt++ {

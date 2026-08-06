@@ -279,7 +279,7 @@ func TestTLSFloorIsModern(t *testing.T) {
 }
 
 // The write limiter answers 429 with a Retry-After rather than letting a script
-// hammer Oracle and the KV buckets.
+// hammer the database and the KV buckets.
 func TestRateLimiterReturns429(t *testing.T) {
 	sec := &security{
 		tokens:  mustTokens(t, "", "secret"),

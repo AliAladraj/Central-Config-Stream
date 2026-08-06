@@ -1,0 +1,109 @@
+# Vulnerability scanning, deliberately outside CI.
+#
+# ci.yml is one job so a contributor sees a single green tick, and a scanner
+# does not belong in that gate: it goes red for reasons that have nothing to do
+# with the change in front of it — a CVE published this morning against a
+# dependency nobody touched. Failing someone else's pull request that way is how
+# a project teaches people that a red tick is noise, which is the same reasoning
+# .github/dependabot.yml gives for grouping updates and running monthly.
+name: Security
+
+on:
+  # Weekly rather than daily. The advisory databases move, but not that fast,
+  # and a scan nobody reads is worth less than no scan. Off the hour because
+  # everything scheduled at :00 queues behind everything else scheduled at :00.
+  schedule:
+    - cron: '17 4 * * 1'
+
+  # For running it by hand when a report arrives, without waiting for Monday.
+  workflow_dispatch:
+
+  # The dependency manifests, and nothing else. A pull request that only changes
+  # Go or JS source cannot change what is vulnerable — the code it calls is
+  # already covered by the weekly run — so scanning it would put a second tick
+  # on every pull request and tell nobody anything.
+  #
+  # Dockerfile is here because base images are the third dependency surface
+  # dependabot tracks, and govulncheck reports standard-library vulnerabilities
+  # against the Go toolchain, so a base-image bump changes what ships even
+  # though neither job below parses that file.
+  pull_request:
+    branches: [main]
+    paths:
+      - go.mod
+      - go.sum
+      - webui/package-lock.json
+      - Dockerfile
+
+# Read-only. Findings are output; nothing here publishes, comments or pushes.
+permissions:
+  contents: read
+
+# As in ci.yml: a second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # No checkout step: this action checks out the repository itself
+      # (repo-checkout defaults to true), so adding one duplicates the work.
+      #
+      # Pinned by major tag for the reason ci.yml pins golangci-lint: a change
+      # in what the tool reports should turn this job red on the commit that
+      # bumps this line. The exact `version:` pin ci.yml puts on golangci-lint
+      # has no equivalent here — the action installs govulncheck@latest and
+      # exposes no version input — and the vulnerability database is fetched
+      # live in any case, which is the point of it. A scanner pinned to last
+      # quarter's database is a green tick that means nothing.
+      #
+      # go-version-file for the same reason as ci.yml, the Go version living in
+      # go.mod and nowhere else. It matters more here, because the standard
+      # library is scanned as a dependency like any other — and this action
+      # defaults check-latest to true, so it resolves the newest 1.26.x rather
+      # than whatever patch a runner happens to have cached. That is the
+      # difference between a page of stdlib findings and a green tick.
+      #
+      # govulncheck reports only vulnerabilities that are actually reachable
+      # from this code, which is what makes it quiet enough to be worth reading:
+      # a CVE in a module we depend on but never call does not fail this job.
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # node-version-file as in ci.yml. No `npm ci` follows: npm audit resolves
+      # the tree from package-lock.json and asks the registry, so installing the
+      # packages would only make the job slower.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: webui/package.json
+
+      # --omit=dev drops vite, eslint and vitest. They never leave a developer's
+      # machine or a build stage, and an advisory in a bundler is not a
+      # vulnerability in anything this repository ships.
+      #
+      # --audit-level=high sets where the job fails, not what it prints;
+      # everything below that is still in the output for whoever is reading.
+      # SECURITY.md already puts the console out of scope as a deployment
+      # target, so the bar here is high rather than absent: a moderate advisory
+      # in a transitive dependency of a development UI is precisely the stream
+      # of alerts that trains people to stop looking.
+      - name: npm audit
+        working-directory: webui
+        run: npm audit --omit=dev --audit-level=high

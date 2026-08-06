@@ -12,15 +12,6 @@ import (
 	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
 )
 
-// sinceWindowUTC converts the bound reconcile window into the session time zone
-// before comparing it. UPDATED_AT is a plain TIMESTAMP written by
-// CURRENT_TIMESTAMP, so it carries the session's local wall clock, while the
-// bound value comes from a Go UTC clock — on a non-UTC session comparing them
-// directly matches the wrong rows, or none at all, and reports success either
-// way. Converting the bound value rather than the column leaves UPDATED_AT bare
-// on the left-hand side, so its index still serves the window.
-const sinceWindowUTC = `CAST(FROM_TZ(CAST(:1 AS TIMESTAMP), 'UTC') AT TIME ZONE SESSIONTIMEZONE AS TIMESTAMP)`
-
 type Repository interface {
 	GetMicroserviceConfigByID(ctx context.Context, id int64) (*MicroserviceAppSettings, error)
 	UpdateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error)
@@ -41,19 +32,19 @@ type Repository interface {
 	DeleteEnvironment(ctx context.Context, id int64) error
 }
 
-type OracleRepository struct {
+type PostgresRepository struct {
 	db *sql.DB
 }
 
-func NewOracleRepository(db *sql.DB) *OracleRepository {
-	return &OracleRepository{db: db}
+func NewPostgresRepository(db *sql.DB) *PostgresRepository {
+	return &PostgresRepository{db: db}
 }
 
-func (r *OracleRepository) GetMicroserviceConfigByID(ctx context.Context, id int64) (*MicroserviceAppSettings, error) {
+func (r *PostgresRepository) GetMicroserviceConfigByID(ctx context.Context, id int64) (*MicroserviceAppSettings, error) {
 	const query = `
 		SELECT ID, MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON, UPDATED_AT
 		FROM CONFIG_MICROSERVICE_APPSETTINGS
-		WHERE ID = :1
+		WHERE ID = $1
 	`
 
 	var cfg MicroserviceAppSettings
@@ -78,7 +69,7 @@ func (r *OracleRepository) GetMicroserviceConfigByID(ctx context.Context, id int
 	return &cfg, nil
 }
 
-func (r *OracleRepository) UpdateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error) {
+func (r *PostgresRepository) UpdateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error) {
 	// An update rewrites the natural key, so it needs the same referential and
 	// uniqueness checks a create gets: without them it can point at rows that
 	// do not exist, or collide with another row and surface as a 500.
@@ -88,19 +79,19 @@ func (r *OracleRepository) UpdateMicroserviceConfig(ctx context.Context, input M
 
 	const query = `
 		UPDATE CONFIG_MICROSERVICE_APPSETTINGS
-		SET MICROSERVICE_ID = :1,
-		    ENVIRONMENT_ID = :2,
-		    SETTINGS_JSON = :3,
+		SET MICROSERVICE_ID = $1,
+		    ENVIRONMENT_ID = $2,
+		    SETTINGS_JSON = $3,
 		    UPDATED_AT = CURRENT_TIMESTAMP
-		WHERE ID = :4
+		WHERE ID = $4
 	`
 
 	// Optimistic concurrency is opt-in: only when the caller told us which
 	// version it read does the UPDATE become conditional.
 	stmt := query
-	args := []any{input.MicroserviceID, input.EnvironmentID, database.CLOB(string(input.SettingsJSON)), input.ID}
+	args := []any{input.MicroserviceID, input.EnvironmentID, string(input.SettingsJSON), input.ID}
 	if input.ExpectedUpdatedAt != nil {
-		stmt += ` AND UPDATED_AT = :5`
+		stmt += ` AND UPDATED_AT = $5`
 		args = append(args, *input.ExpectedUpdatedAt)
 	}
 
@@ -126,7 +117,7 @@ func (r *OracleRepository) UpdateMicroserviceConfig(ctx context.Context, input M
 
 // noRowsErr tells a lost optimistic-concurrency race apart from a missing row:
 // a guarded UPDATE that matches nothing cannot distinguish the two by itself.
-func (r *OracleRepository) noRowsErr(ctx context.Context, input MicroserviceAppSettings) error {
+func (r *PostgresRepository) noRowsErr(ctx context.Context, input MicroserviceAppSettings) error {
 	if input.ExpectedUpdatedAt == nil {
 		return ErrConfigNotFound
 	}
@@ -138,7 +129,7 @@ func (r *OracleRepository) noRowsErr(ctx context.Context, input MicroserviceAppS
 
 // ListAllForReconcile returns appsettings rows to republish to KV. A zero
 // `since` sweeps every row; otherwise only rows changed at or after `since`.
-func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.Time) ([]MicroserviceAppSettings, error) {
+func (r *PostgresRepository) ListAllForReconcile(ctx context.Context, since time.Time) ([]MicroserviceAppSettings, error) {
 	const base = `
 		SELECT ID, MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON, UPDATED_AT
 		FROM CONFIG_MICROSERVICE_APPSETTINGS
@@ -147,7 +138,12 @@ func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.T
 	query := base
 	var args []any
 	if !since.IsZero() {
-		query = base + ` WHERE UPDATED_AT >= ` + sinceWindowUTC
+		// UPDATED_AT is TIMESTAMPTZ, so the column stores an instant and the
+		// bound instant compares against it correctly whatever the session's
+		// TimeZone is set to. Nothing has to be converted around either side,
+		// which also leaves the column bare so IX_APPSETTINGS_UPDATED_AT still
+		// serves the window.
+		query = base + ` WHERE UPDATED_AT >= $1`
 		args = append(args, since.UTC())
 	}
 	// A deterministic order matters when the sweep cannot publish every row:
@@ -173,11 +169,11 @@ func (r *OracleRepository) ListAllForReconcile(ctx context.Context, since time.T
 	return out, rows.Err()
 }
 
-func (r *OracleRepository) GetMicroserviceByID(ctx context.Context, id int64) (*Microservice, error) {
+func (r *PostgresRepository) GetMicroserviceByID(ctx context.Context, id int64) (*Microservice, error) {
 	const query = `
 		SELECT ID, MICROSERVICE, UPDATED_AT
 		FROM CONFIG_MICROSERVICES
-		WHERE ID = :1
+		WHERE ID = $1
 	`
 
 	var m Microservice
@@ -196,7 +192,7 @@ func (r *OracleRepository) GetMicroserviceByID(ctx context.Context, id int64) (*
 	return &m, nil
 }
 
-func (r *OracleRepository) ListMicroserviceConfigs(ctx context.Context, filter AppSettingsFilter) ([]MicroserviceAppSettings, error) {
+func (r *PostgresRepository) ListMicroserviceConfigs(ctx context.Context, filter AppSettingsFilter) ([]MicroserviceAppSettings, error) {
 	query := `
 		SELECT ID, MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON, UPDATED_AT
 		FROM CONFIG_MICROSERVICE_APPSETTINGS
@@ -206,17 +202,17 @@ func (r *OracleRepository) ListMicroserviceConfigs(ctx context.Context, filter A
 	var where []string
 	if filter.MicroserviceID > 0 {
 		args = append(args, filter.MicroserviceID)
-		where = append(where, fmt.Sprintf("MICROSERVICE_ID = :%d", len(args)))
+		where = append(where, fmt.Sprintf("MICROSERVICE_ID = $%d", len(args)))
 	}
 	if filter.EnvironmentID > 0 {
 		args = append(args, filter.EnvironmentID)
-		where = append(where, fmt.Sprintf("ENVIRONMENT_ID = :%d", len(args)))
+		where = append(where, fmt.Sprintf("ENVIRONMENT_ID = $%d", len(args)))
 	}
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	query += fmt.Sprintf(` ORDER BY ID OFFSET :%d ROWS FETCH NEXT :%d ROWS ONLY`, len(args)+1, len(args)+2)
-	args = append(args, filter.Offset, filter.Limit)
+	query += fmt.Sprintf(` ORDER BY ID LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	args = append(args, filter.Limit, filter.Offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -227,17 +223,17 @@ func (r *OracleRepository) ListMicroserviceConfigs(ctx context.Context, filter A
 	return scanAppSettings(rows)
 }
 
-func (r *OracleRepository) CreateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error) {
+func (r *PostgresRepository) CreateMicroserviceConfig(ctx context.Context, input MicroserviceAppSettings) (*MicroserviceAppSettings, error) {
 	if err := r.checkAppSettingsRefs(ctx, input); err != nil {
 		return nil, err
 	}
 
 	const insert = `
 		INSERT INTO CONFIG_MICROSERVICE_APPSETTINGS (MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON, UPDATED_AT)
-		VALUES (:1, :2, :3, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
 	`
 	if _, err := r.db.ExecContext(ctx, insert,
-		input.MicroserviceID, input.EnvironmentID, database.CLOB(string(input.SettingsJSON))); err != nil {
+		input.MicroserviceID, input.EnvironmentID, string(input.SettingsJSON)); err != nil {
 		// The check above is a fast path, not a lock: two concurrent creates
 		// both pass it and the constraint decides between them.
 		if database.IsUniqueViolation(err) {
@@ -255,8 +251,8 @@ func (r *OracleRepository) CreateMicroserviceConfig(ctx context.Context, input M
 // than relying on the foreign keys: a constraint violation arrives as an opaque
 // driver error, and the caller needs to tell "no such microservice" apart from
 // "already exists" to pick a status code.
-func (r *OracleRepository) checkAppSettingsRefs(ctx context.Context, input MicroserviceAppSettings) error {
-	services, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_MICROSERVICES WHERE ID = :1`, input.MicroserviceID)
+func (r *PostgresRepository) checkAppSettingsRefs(ctx context.Context, input MicroserviceAppSettings) error {
+	services, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_MICROSERVICES WHERE ID = $1`, input.MicroserviceID)
 	if err != nil {
 		return err
 	}
@@ -264,7 +260,7 @@ func (r *OracleRepository) checkAppSettingsRefs(ctx context.Context, input Micro
 		return ErrMicroserviceNotFound
 	}
 
-	envs, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_ENVIRONMENTS WHERE ID = :1`, input.EnvironmentID)
+	envs, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_ENVIRONMENTS WHERE ID = $1`, input.EnvironmentID)
 	if err != nil {
 		return err
 	}
@@ -277,7 +273,7 @@ func (r *OracleRepository) checkAppSettingsRefs(ctx context.Context, input Micro
 	// nothing.
 	taken, err := r.count(ctx,
 		`SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS
-		 WHERE MICROSERVICE_ID = :1 AND ENVIRONMENT_ID = :2 AND ID <> :3`,
+		 WHERE MICROSERVICE_ID = $1 AND ENVIRONMENT_ID = $2 AND ID <> $3`,
 		input.MicroserviceID, input.EnvironmentID, input.ID)
 	if err != nil {
 		return err
@@ -288,11 +284,11 @@ func (r *OracleRepository) checkAppSettingsRefs(ctx context.Context, input Micro
 	return nil
 }
 
-func (r *OracleRepository) getConfigByServiceAndEnv(ctx context.Context, microserviceID, environmentID int64) (*MicroserviceAppSettings, error) {
+func (r *PostgresRepository) getConfigByServiceAndEnv(ctx context.Context, microserviceID, environmentID int64) (*MicroserviceAppSettings, error) {
 	const query = `
 		SELECT ID, MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON, UPDATED_AT
 		FROM CONFIG_MICROSERVICE_APPSETTINGS
-		WHERE MICROSERVICE_ID = :1 AND ENVIRONMENT_ID = :2
+		WHERE MICROSERVICE_ID = $1 AND ENVIRONMENT_ID = $2
 	`
 
 	var cfg MicroserviceAppSettings
@@ -315,7 +311,7 @@ func (r *OracleRepository) getConfigByServiceAndEnv(ctx context.Context, microse
 	return &cfg, nil
 }
 
-func (r *OracleRepository) DeleteMicroserviceConfig(ctx context.Context, id int64) (*MicroserviceAppSettings, error) {
+func (r *PostgresRepository) DeleteMicroserviceConfig(ctx context.Context, id int64) (*MicroserviceAppSettings, error) {
 	// The KV key is read before the row goes away — afterwards there is nothing
 	// left to derive it from.
 	removed, err := r.GetMicroserviceConfigByID(ctx, id)
@@ -323,7 +319,7 @@ func (r *OracleRepository) DeleteMicroserviceConfig(ctx context.Context, id int6
 		return nil, err
 	}
 
-	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE ID = :1`, id)
+	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE ID = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("delete config: %w", err)
 	}
@@ -338,15 +334,15 @@ func (r *OracleRepository) DeleteMicroserviceConfig(ctx context.Context, id int6
 	return removed, nil
 }
 
-func (r *OracleRepository) ListMicroservices(ctx context.Context, page Page) ([]Microservice, error) {
+func (r *PostgresRepository) ListMicroservices(ctx context.Context, page Page) ([]Microservice, error) {
 	const query = `
 		SELECT ID, MICROSERVICE, UPDATED_AT
 		FROM CONFIG_MICROSERVICES
 		ORDER BY ID
-		OFFSET :1 ROWS FETCH NEXT :2 ROWS ONLY
+		LIMIT $1 OFFSET $2
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, page.Offset, page.Limit)
+	rows, err := r.db.QueryContext(ctx, query, page.Limit, page.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("list microservices: %w", err)
 	}
@@ -355,8 +351,8 @@ func (r *OracleRepository) ListMicroservices(ctx context.Context, page Page) ([]
 	return scanMicroservices(rows)
 }
 
-func (r *OracleRepository) CreateMicroservice(ctx context.Context, name string) (*Microservice, error) {
-	taken, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_MICROSERVICES WHERE MICROSERVICE = :1`, name)
+func (r *PostgresRepository) CreateMicroservice(ctx context.Context, name string) (*Microservice, error) {
+	taken, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_MICROSERVICES WHERE MICROSERVICE = $1`, name)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +360,7 @@ func (r *OracleRepository) CreateMicroservice(ctx context.Context, name string) 
 		return nil, ErrMicroserviceExists
 	}
 
-	const insert = `INSERT INTO CONFIG_MICROSERVICES (MICROSERVICE, UPDATED_AT) VALUES (:1, CURRENT_TIMESTAMP)`
+	const insert = `INSERT INTO CONFIG_MICROSERVICES (MICROSERVICE, UPDATED_AT) VALUES ($1, CURRENT_TIMESTAMP)`
 	if _, err := r.db.ExecContext(ctx, insert, name); err != nil {
 		if database.IsUniqueViolation(err) {
 			return nil, ErrMicroserviceExists
@@ -372,7 +368,7 @@ func (r *OracleRepository) CreateMicroservice(ctx context.Context, name string) 
 		return nil, fmt.Errorf("create microservice: %w", err)
 	}
 
-	const query = `SELECT ID, MICROSERVICE, UPDATED_AT FROM CONFIG_MICROSERVICES WHERE MICROSERVICE = :1`
+	const query = `SELECT ID, MICROSERVICE, UPDATED_AT FROM CONFIG_MICROSERVICES WHERE MICROSERVICE = $1`
 
 	var m Microservice
 	if err := r.db.QueryRowContext(ctx, query, name).Scan(&m.ID, &m.Microservice, &m.UpdatedAt); err != nil {
@@ -384,11 +380,10 @@ func (r *OracleRepository) CreateMicroservice(ctx context.Context, name string) 
 // DeleteMicroservice refuses to orphan the rows that point at it. Cascading
 // would silently delete that service's appsettings and translations in every
 // environment.
-func (r *OracleRepository) DeleteMicroservice(ctx context.Context, id int64) error {
+func (r *PostgresRepository) DeleteMicroservice(ctx context.Context, id int64) error {
 	const refs = `
-		SELECT (SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE MICROSERVICE_ID = :1)
-		     + (SELECT COUNT(*) FROM CONFIG_LOCALIZATION WHERE MICROSERVICE_ID = :2)
-		FROM DUAL
+		SELECT (SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE MICROSERVICE_ID = $1)
+		     + (SELECT COUNT(*) FROM CONFIG_LOCALIZATION WHERE MICROSERVICE_ID = $2)
 	`
 
 	inUse, err := r.count(ctx, refs, id, id)
@@ -399,7 +394,7 @@ func (r *OracleRepository) DeleteMicroservice(ctx context.Context, id int64) err
 		return ErrMicroserviceInUse
 	}
 
-	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICES WHERE ID = :1`, id)
+	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICES WHERE ID = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete microservice: %w", err)
 	}
@@ -413,15 +408,15 @@ func (r *OracleRepository) DeleteMicroservice(ctx context.Context, id int64) err
 	return nil
 }
 
-func (r *OracleRepository) ListEnvironments(ctx context.Context, page Page) ([]Environment, error) {
+func (r *PostgresRepository) ListEnvironments(ctx context.Context, page Page) ([]Environment, error) {
 	const query = `
 		SELECT ID, ENVIRONMENT, UPDATED_AT
 		FROM CONFIG_ENVIRONMENTS
 		ORDER BY ID
-		OFFSET :1 ROWS FETCH NEXT :2 ROWS ONLY
+		LIMIT $1 OFFSET $2
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, page.Offset, page.Limit)
+	rows, err := r.db.QueryContext(ctx, query, page.Limit, page.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
@@ -430,8 +425,8 @@ func (r *OracleRepository) ListEnvironments(ctx context.Context, page Page) ([]E
 	return scanEnvironments(rows)
 }
 
-func (r *OracleRepository) CreateEnvironment(ctx context.Context, name string) (*Environment, error) {
-	taken, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_ENVIRONMENTS WHERE ENVIRONMENT = :1`, name)
+func (r *PostgresRepository) CreateEnvironment(ctx context.Context, name string) (*Environment, error) {
+	taken, err := r.count(ctx, `SELECT COUNT(*) FROM CONFIG_ENVIRONMENTS WHERE ENVIRONMENT = $1`, name)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +434,7 @@ func (r *OracleRepository) CreateEnvironment(ctx context.Context, name string) (
 		return nil, ErrEnvironmentExists
 	}
 
-	const insert = `INSERT INTO CONFIG_ENVIRONMENTS (ENVIRONMENT, UPDATED_AT) VALUES (:1, CURRENT_TIMESTAMP)`
+	const insert = `INSERT INTO CONFIG_ENVIRONMENTS (ENVIRONMENT, UPDATED_AT) VALUES ($1, CURRENT_TIMESTAMP)`
 	if _, err := r.db.ExecContext(ctx, insert, name); err != nil {
 		if database.IsUniqueViolation(err) {
 			return nil, ErrEnvironmentExists
@@ -447,7 +442,7 @@ func (r *OracleRepository) CreateEnvironment(ctx context.Context, name string) (
 		return nil, fmt.Errorf("create environment: %w", err)
 	}
 
-	const query = `SELECT ID, ENVIRONMENT, UPDATED_AT FROM CONFIG_ENVIRONMENTS WHERE ENVIRONMENT = :1`
+	const query = `SELECT ID, ENVIRONMENT, UPDATED_AT FROM CONFIG_ENVIRONMENTS WHERE ENVIRONMENT = $1`
 
 	var e Environment
 	if err := r.db.QueryRowContext(ctx, query, name).Scan(&e.ID, &e.Environment, &e.UpdatedAt); err != nil {
@@ -459,12 +454,11 @@ func (r *OracleRepository) CreateEnvironment(ctx context.Context, name string) (
 // DeleteEnvironment refuses to orphan the rows that point at it. An environment
 // is the widest blast radius in the schema — cascading it would wipe every
 // flag value, appsettings row and bundle for a whole stage.
-func (r *OracleRepository) DeleteEnvironment(ctx context.Context, id int64) error {
+func (r *PostgresRepository) DeleteEnvironment(ctx context.Context, id int64) error {
 	const refs = `
-		SELECT (SELECT COUNT(*) FROM CONFIG_FLAG_VALUE WHERE ENVIRONMENT_ID = :1)
-		     + (SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE ENVIRONMENT_ID = :2)
-		     + (SELECT COUNT(*) FROM CONFIG_LOCALIZATION WHERE ENVIRONMENT_ID = :3)
-		FROM DUAL
+		SELECT (SELECT COUNT(*) FROM CONFIG_FLAG_VALUE WHERE ENVIRONMENT_ID = $1)
+		     + (SELECT COUNT(*) FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE ENVIRONMENT_ID = $2)
+		     + (SELECT COUNT(*) FROM CONFIG_LOCALIZATION WHERE ENVIRONMENT_ID = $3)
 	`
 
 	inUse, err := r.count(ctx, refs, id, id, id)
@@ -475,7 +469,7 @@ func (r *OracleRepository) DeleteEnvironment(ctx context.Context, id int64) erro
 		return ErrEnvironmentInUse
 	}
 
-	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_ENVIRONMENTS WHERE ID = :1`, id)
+	result, err := r.db.ExecContext(ctx, `DELETE FROM CONFIG_ENVIRONMENTS WHERE ID = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete environment: %w", err)
 	}
@@ -489,7 +483,7 @@ func (r *OracleRepository) DeleteEnvironment(ctx context.Context, id int64) erro
 	return nil
 }
 
-func (r *OracleRepository) count(ctx context.Context, query string, args ...any) (int64, error) {
+func (r *PostgresRepository) count(ctx context.Context, query string, args ...any) (int64, error) {
 	var n int64
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count rows: %w", err)

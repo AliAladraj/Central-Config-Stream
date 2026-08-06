@@ -1,0 +1,78 @@
+# The useful thing to establish early is which plane a proposal lands in, because
+# that is what decides its cost. Something confined to the admin API is one
+# package and a handler test; something that changes the KV layout or what
+# configclient reads is a change to a contract that consumers in languages this
+# repository does not ship have already implemented by hand.
+name: Feature request
+description: Propose something the control plane, the distribution plane or the client should do and does not.
+labels: ["enhancement"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If what you want is a fourth configuration domain alongside flags, appsettings and
+        localization, read
+        [Adding a config domain](https://github.com/ErasedKyte/Central-Config-Stream/blob/HEAD/CONTRIBUTING.md#adding-a-config-domain)
+        first. It is around 45 sites in 13 files, half of which fail silently at runtime. That size
+        is not a discouragement — it is the honest argument for or against, and it is worth having
+        in front of you while you write the proposal.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What you are trying to do, and where the current shape gets in the way. Concrete beats
+        general: the request you wanted to make, the value you wanted a consumer to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: planes
+    attributes:
+      label: Which plane does this touch?
+      description: >-
+        Pick every one that applies. The last two are the expensive ones — a KV layout change is a
+        change to `docs/CONSUMER_CONTRACT.md`, which consumers in other languages implement by hand.
+      multiple: true
+      options:
+        - Admin API (routes, validation, auth and scoping, audit)
+        - Publisher / reconciler (the write-through path and the sweep that heals it)
+        - KV layout (buckets, key shapes, value shapes)
+        - pkg/configclient (what a Go consumer caches, watches and reads)
+        - Console (cmd/testconsole and webui/)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: >-
+        The shape rather than the implementation: the route and its body, the key and its value, the
+        method on the client. If it changes what a consumer observes, say what happens to consumers
+        that have not been updated — the data plane has no version negotiation, and a running fleet
+        sees the new shape the moment it is published.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: How you work around it today
+      description: >-
+        What you already tried, and why it is not enough. A workaround that is merely ugly is useful
+        to know about; it may be the answer for now.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: offer
+    attributes:
+      label: Are you offering to build it?
+      description: One maintainer, best effort — an offer changes the odds considerably. Never required.
+      options:
+        - label: I would like to send the pull request for this.
+          required: false

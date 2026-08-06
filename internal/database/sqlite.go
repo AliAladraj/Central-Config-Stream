@@ -12,7 +12,7 @@ import (
 
 // NewSQLiteDB opens the local test-stack database. It is NOT a production
 // path: it exists so the whole JetStream distribution flow (write-through,
-// watch, reconcile) can be exercised without an Oracle instance. Oracle is
+// watch, reconcile) can be exercised without a Postgres instance. Postgres is
 // the source of truth in a deployed setup; see DB_DRIVER in app config.
 //
 // dsn is a file path, or ":memory:" for an ephemeral database.
@@ -47,10 +47,16 @@ func NewSQLiteDB(dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-// sqliteSchema mirrors the Oracle tables the repositories query. migrations/
+// sqliteSchema mirrors the Postgres tables the repositories query. migrations/
 // defines that schema; this is the SQLite translation of it. Column names match
 // exactly so the SQL differs only in bind-parameter syntax, and the indexes are
 // mirrored too so a query that is cheap here is cheap there.
+//
+// One difference the mirror cannot express: migrations/ declares UPDATED_AT as
+// TIMESTAMPTZ, which stores an instant, while SQLite keeps CURRENT_TIMESTAMP as
+// a naive UTC string that the repositories parse with a fixed layout. The
+// column names and comparisons are the same on both sides; what differs is that
+// the SQLite path can never catch a timezone mistake in the Postgres one.
 const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS CONFIG_ENVIRONMENTS (
     ID          INTEGER PRIMARY KEY,

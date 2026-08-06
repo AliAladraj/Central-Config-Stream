@@ -50,9 +50,13 @@ type Filter struct {
 	Offset       int
 }
 
-// MaxStoredBody bounds the recorded body. It is a byte budget rather than a
-// character one because the Oracle column is VARCHAR2(4000 BYTE); the headroom
-// covers the truncation marker.
+// MaxStoredBody bounds the recorded body. It is a byte budget, while
+// REQUEST_BODY's VARCHAR(4000) is measured in characters, so the budget is
+// deliberately conservative: a body of multi-byte characters is truncated
+// earlier than the column requires, never later. That is the safe direction to
+// be wrong in — this insert is on the request path, and a body the column
+// rejects is a failed INSERT rather than a shortened row. The headroom covers
+// the truncation marker.
 const MaxStoredBody = 3800
 
 const (

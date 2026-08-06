@@ -41,7 +41,7 @@ func (s *Service) UpdateFlagValue(ctx context.Context, req FlagValue) (*FlagValu
 		return nil, ErrInvalidFlagID
 	}
 
-	// 1. Oracle is the source of truth. The repository hands back the flag key
+	// 1. The database is the source of truth. The repository hands back the flag key
 	//    alongside the row, so publishing needs no extra query.
 	updated, flagKey, err := s.repo.UpdateFlagValue(ctx, req)
 	if err != nil {
@@ -103,7 +103,7 @@ func (s *Service) CreateFlagValue(ctx context.Context, req FlagValue) (*FlagValu
 		return nil, ErrInvalidEnvironmentID
 	}
 
-	// 1. Oracle is the source of truth.
+	// 1. The database is the source of truth.
 	created, flagKey, err := s.repo.CreateFlagValue(ctx, req)
 	if err != nil {
 		return nil, err

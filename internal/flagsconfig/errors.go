@@ -4,7 +4,7 @@
 // environment watches every flag in it.
 //
 // The package is the fullest worked example of the shape all three config
-// domains share — model, sentinel errors, an Oracle repository and its SQLite
+// domains share — model, sentinel errors, a Postgres repository and its SQLite
 // mirror, a service that validates and publishes write-through to KV, and a
 // handler that maps each sentinel to a status. CONTRIBUTING.md points here as
 // the pattern to copy.

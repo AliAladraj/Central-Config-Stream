@@ -50,7 +50,7 @@ func (s *Service) UpdateMicroserviceConfig(ctx context.Context, req Microservice
 		return nil, err
 	}
 
-	// 1. Oracle is the source of truth.
+	// 1. The database is the source of truth.
 	updated, err := s.repo.UpdateMicroserviceConfig(ctx, req)
 	if err != nil {
 		return nil, err
@@ -99,7 +99,7 @@ func (s *Service) CreateMicroserviceConfig(ctx context.Context, req Microservice
 		return nil, err
 	}
 
-	// 1. Oracle is the source of truth.
+	// 1. The database is the source of truth.
 	created, err := s.repo.CreateMicroserviceConfig(ctx, req)
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func (s *Service) DeleteEnvironment(ctx context.Context, id int64) error {
 }
 
 // logPublishFailure records a dropped write-through. The request still
-// succeeded — Oracle has the row — so this is the only trace of the drift the
+// succeeded — the database has the row — so this is the only trace of the drift the
 // reconciler will have to repair.
 func logPublishFailure(ctx context.Context, environmentID, microserviceID int64, err error) {
 	obs.FromContext(ctx, "microconfig").Error("publish settings failed (will reconcile)",
@@ -226,7 +226,7 @@ func checkSettings(settings json.RawMessage) error {
 }
 
 // validName bounds a reference-table name. Empty names make an unusable admin
-// UI and the column is a VARCHAR2(100).
+// UI and the column is a VARCHAR(100).
 func validName(name string) bool {
 	return name != "" && len(name) <= 100
 }

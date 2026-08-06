@@ -137,7 +137,7 @@ to investigate probing against the API as a whole.
 ### Audit trail
 
 Every mutating request (`POST`/`PUT`/`PATCH`/`DELETE`) **that is addressed at a
-real route** is recorded in `CONFIG_AUDIT_LOG` (Oracle DDL in
+real route** is recorded in `CONFIG_AUDIT_LOG` (PostgreSQL DDL in
 `migrations/008_config_audit_log.sql`, mirrored in
 `internal/database/sqlite.go`). Reads are not audited.
 
@@ -181,9 +181,9 @@ Columns: `OCCURRED_AT`, `ACTOR` (token name), `METHOD`, `PATH`, `TARGET_DOMAIN`,
   that a secret in a field named nothing like a secret is stored in full, which
   is one more reason for the `env:VAR_NAME` convention below.
 * **An audit write never fails the request.** It runs after the change has been
-  committed to Oracle and published to KV; failing then would report an error for
-  a change that did happen. Failures are logged, the same philosophy as the KV
-  publish path, which logs and lets the reconciler heal.
+  committed to the database and published to KV; failing then would report an
+  error for a change that did happen. Failures are logged, the same philosophy
+  as the KV publish path, which logs and lets the reconciler heal.
 
 Read it back with `GET /audit?actor=&from=&to=&limit=&offset=`. `from`/`to`
 accept `2026-01-01` or a full RFC 3339 instant; paging follows the same

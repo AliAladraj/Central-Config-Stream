@@ -1,0 +1,153 @@
+# A bug in a control plane is usually a bug in a path, not in a function: the
+# admin write, the write-through to KV, the reconcile sweep and the consumer's
+# cache are four places a value can be wrong in different ways. The fields below
+# are the ones that say which of the four you are looking at — the commit,
+# because a fix is written against one; the driver, because the two backends are
+# covered by different suites; the JetStream answer, because a server without it cannot
+# distribute anything; and where the value stopped, because the dual write is
+# not transactional and that is the most common shape of a real report.
+name: Bug report
+description: The service, pkg/configclient or the console behaves differently from what the documentation says.
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Not for security problems.** A defect that reaches the admin API, widens a token's
+        environment scope, or writes to a KV bucket is a way to change production, and issues here
+        are world-readable. Report those privately from the
+        [Security tab](https://github.com/ErasedKyte/Central-Config-Stream/security) —
+        [`SECURITY.md`](https://github.com/ErasedKyte/Central-Config-Stream/blob/HEAD/SECURITY.md)
+        says why and what a useful report contains.
+
+        The bundled test console (`cmd/testconsole`, `webui/`) is a development tool, not a
+        deployment target — bugs in it are welcome here, but its lack of authentication is not one.
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: >-
+        Output of `git rev-parse HEAD`, or the `--version` line if you are running a released
+        binary or image — it carries the version, the short commit and the build date. The
+        supported line is the latest release plus `main`; see "Supported versions" in
+        `SECURITY.md`.
+      placeholder: 4f1c0a9e2b7d5f3a1c8e0b6d4a2f9c7e5b3d1a08
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+      description: >-
+        Include the status code and response body if an HTTP request is involved, and say which
+        document told you to expect the other thing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: The smallest sequence that reproduces it
+      description: >-
+        Ideally `curl` against the compose stack (`deploy/compose/README.md`), which starts from a
+        known seeded state. Remember that `PUT` carries the row id in the body rather than the path,
+        and that `enabled` is an integer on the API and a boolean in KV.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: db-driver
+    attributes:
+      label: DB_DRIVER
+      description: >-
+        The two backends are covered by different suites: the PostgreSQL repositories by
+        internal/pgintegration against a real server, everything above them by tests that run on
+        SQLite. Which driver you are on decides which of the two a report lands in.
+      options:
+        - sqlite (the local test stack)
+        - postgres
+    validations:
+      required: true
+
+  - type: input
+    id: nats-version
+    attributes:
+      label: NATS version
+      description: "`nats-server --version`, or the image tag you are running. 2.10+ is the floor."
+      placeholder: nats-server 2.10.22
+    validations:
+      required: true
+
+  - type: dropdown
+    id: jetstream
+    attributes:
+      label: Is JetStream enabled on that server?
+      description: >-
+        KV buckets are a JetStream feature; a server started without `--jetstream` cannot run this
+        at all, and the failure looks like a permanent publish error rather than a refusal.
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure — the server is not mine to inspect"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: where-it-stopped
+    attributes:
+      label: Where did the value stop?
+      description: >-
+        If a write is involved, read the row back from the admin API and then read the key
+        (`nats kv get FLAGS 1.dark_mode`). The dual write is not transactional — the database is
+        committed first and a KV failure is logged rather than returned — so a `200` with nothing in
+        KV is the expected shape of several different bugs. Note when you looked: the reconciler
+        heals that gap on its next sweep, `RECONCILE_INTERVAL` (default 5m) later.
+      options:
+        - The row is in the database, KV has an older value or none
+        - KV has the value, the consumer's cache does not
+        - Neither has it — the write was refused or never committed
+        - Both agree; the problem is somewhere else
+        - Not a write, or I have not checked
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant environment variables
+      description: >-
+        The ones that bear on this from `.env.example` — `PUBLISH_ENABLED`, `NATS_URL`,
+        `RECONCILE_INTERVAL`, `NATS_REPLICAS`, the token scope shape, `TLS_*`. **Redact the
+        secrets**: token values, connection-string credentials and `.creds` contents. The scope of a
+        token often matters; its secret never does.
+      render: shell
+      placeholder: |
+        PUBLISH_ENABLED=true
+        RECONCILE_INTERVAL=5m
+        ADMIN_TOKENS=ci-dev:1|2:REDACTED
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        The service's own lines around the failure. A dropped publish never reaches the HTTP caller,
+        so the log is usually the only record that it happened — `docs/OBSERVABILITY.md` describes
+        the shape and the metrics that count the same events.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Before you post
+      options:
+        - label: There are no real tokens, connection strings or `.creds` contents anywhere above.
+          required: true

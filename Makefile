@@ -21,22 +21,81 @@ CONSOLE_BIN := testconsole
 COMPOSE_FILE := deploy/compose/docker-compose.yml
 COVERAGE := coverage.out
 
-.PHONY: help build test cover lint fmt ui run console stack clean
+# The throwaway PostgreSQL `test-postgres` runs the integration suite against.
+# It holds no state worth keeping — internal/pgintegration migrates and seeds a
+# schema of its own per test — so the container is created and destroyed around
+# a single run rather than left up. PG_TEST_PORT is overridable because 5432 is
+# very often already taken by whatever else a developer has running; the default
+# is deliberately not 5432 for the same reason.
+PG_TEST_IMAGE := postgres:17-alpine
+PG_TEST_NAME := central-config-test-postgres
+PG_TEST_PORT ?= 55432
+PG_TEST_DSN := postgres://postgres:postgres@127.0.0.1:$(PG_TEST_PORT)/central_config_test?sslmode=disable
+
+# Build identity, stamped into both binaries by `build` so a running process can
+# say what it is. VERSION, COMMIT and DATE are all overridable — `make build
+# VERSION=v1.2.3` — because a release pipeline knows the version it is cutting
+# better than git does, and a build from a tarball has no git at all, which is
+# what the `|| echo` fallbacks are for.
+#
+# They stay recursively expanded (`?=` and `=`, never `:=`) so git and date run
+# only for the targets that use them, not on every `make help`.
+MODULE := github.com/ErasedKyte/Central-Config-Stream
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS = -X $(MODULE)/internal/buildinfo.Version=$(VERSION) \
+          -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) \
+          -X $(MODULE)/internal/buildinfo.Date=$(DATE)
+
+.PHONY: help build version test test-postgres cover lint fmt ui run console stack clean
 
 help: ## List the available targets
 	@echo "central-config — make targets"
 	@echo
-	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z_-]+:.*?## / { printf "  %-9s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN { FS = ":.*?## " } /^[a-zA-Z_-]+:.*?## / { printf "  %-13s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo
 	@echo "First run: make ui   (the console has nothing to serve until web/ exists)"
 
 build: ## Compile every package, then the service and console binaries
 	go build ./...
-	go build -o $(SERVICE_BIN) ./cmd/central-config
-	go build -o $(CONSOLE_BIN) ./cmd/testconsole
+	go build -ldflags "$(LDFLAGS)" -o $(SERVICE_BIN) ./cmd/central-config
+	go build -ldflags "$(LDFLAGS)" -o $(CONSOLE_BIN) ./cmd/testconsole
+
+version: ## Print the build identity `build` stamps into the binaries
+	@echo "version $(VERSION)"
+	@echo "commit  $(COMMIT)"
+	@echo "date    $(DATE)"
+	@echo
+	@echo "Both binaries report it: ./$(SERVICE_BIN) --version"
 
 test: ## Run the Go test suite with the race detector
 	go test -race -count=1 ./...
+
+# `test` above leaves internal/pgintegration skipping, because TEST_POSTGRES_DSN
+# is unset and the suite refuses to invent a database. This is the target that
+# gives it one: the same thing CI does, on a laptop, in about twenty seconds.
+#
+# The container is removed whether the tests pass or fail — a `trap` rather than
+# a trailing command, because a failing `go test` aborts the recipe (.SHELLFLAGS
+# carries -e) and a cleanup line after it would simply never run. The whole
+# wait-run-clean sequence is therefore one shell invocation; make gives each
+# recipe line its own, and a trap does not survive that.
+test-postgres: ## Run the Postgres integration suite against a throwaway container
+	@docker rm -f $(PG_TEST_NAME) >/dev/null 2>&1 || true
+	@echo "==> starting $(PG_TEST_IMAGE) on :$(PG_TEST_PORT)"
+	@docker run -d --rm --name $(PG_TEST_NAME) \
+		-e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=central_config_test \
+		-p $(PG_TEST_PORT):5432 $(PG_TEST_IMAGE) >/dev/null
+	@trap 'docker rm -f $(PG_TEST_NAME) >/dev/null 2>&1 || true' EXIT; \
+	ready=""; \
+	for _ in $$(seq 1 60); do \
+		if docker exec $(PG_TEST_NAME) pg_isready -U postgres -d central_config_test >/dev/null 2>&1; then ready=yes; break; fi; \
+		sleep 1; \
+	done; \
+	if [ -z "$$ready" ]; then echo "postgres did not become ready in 60s"; exit 1; fi; \
+	echo "==> go test ./internal/pgintegration"; \
+	TEST_POSTGRES_DSN="$(PG_TEST_DSN)" go test -race -count=1 ./internal/pgintegration/
 
 cover: ## Run tests with coverage and write an HTML report
 	go test -coverprofile=$(COVERAGE) ./...

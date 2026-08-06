@@ -6,10 +6,25 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Build identity. The defaults match what an unstamped `go build` leaves in
+# internal/buildinfo, so an image built without --build-arg still reports
+# something honest instead of an empty version. The .git directory is not in the
+# build context, which is why these are arguments rather than git commands:
+#   docker build --build-arg VERSION=$(git describe --tags --always --dirty) .
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+
 # build
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/central-config ./cmd/central-config
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/testconsole ./cmd/testconsole
+# -s -w strips the symbol and DWARF tables; -X writes the identity above into
+# the package that both binaries print from.
+ENV LDFLAGS="-s -w \
+  -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Version=${VERSION} \
+  -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Commit=${COMMIT} \
+  -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Date=${DATE}"
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="$LDFLAGS" -o /out/central-config ./cmd/central-config
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="$LDFLAGS" -o /out/testconsole ./cmd/testconsole
 # writable data dir for the SQLite test backend, owned by the runtime user
 RUN mkdir -p /out/data && chown 65532:65532 /out/data
 
@@ -28,6 +43,16 @@ WORKDIR /app
 COPY --from=build /out/testconsole /app/testconsole
 COPY --from=ui /web /app/web
 
+# Re-declared: an ARG belongs to the stage that declares it, and these are the
+# labels a registry, an SBOM tool or `docker inspect` reads.
+ARG VERSION=dev
+ARG COMMIT=none
+LABEL org.opencontainers.image.title="testconsole" \
+      org.opencontainers.image.source="https://github.com/ErasedKyte/Central-Config-Stream" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="MIT"
+
 USER nonroot:nonroot
 EXPOSE 8090
 
@@ -38,6 +63,14 @@ FROM gcr.io/distroless/static-debian12:nonroot AS central-config
 WORKDIR /app
 COPY --from=build /out/central-config /app/central-config
 COPY --from=build --chown=nonroot:nonroot /out/data /data
+
+ARG VERSION=dev
+ARG COMMIT=none
+LABEL org.opencontainers.image.title="central-config" \
+      org.opencontainers.image.source="https://github.com/ErasedKyte/Central-Config-Stream" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="MIT"
 
 # non-root (provided by the distroless nonroot image)
 USER nonroot:nonroot

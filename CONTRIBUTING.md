@@ -12,6 +12,11 @@ list is the single most useful thing in this file, because roughly half of the
 places it names fail at *runtime* rather than at compile time — you can ship a
 domain that builds, passes review and quietly never reaches a consumer.
 
+Taking part at all — issues, pull requests, review — means
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) applies. It is the Contributor
+Covenant, and it names a private channel for reporting a problem, because the
+only other one this project has is a world-readable issue tracker.
+
 ---
 
 ## Prerequisites
@@ -20,14 +25,20 @@ domain that builds, passes review and quietly never reaches a consumer.
 |---|---|---|
 | Go | **1.26 or newer** | the `go` directive in `go.mod`; the image builds on `golang:1.26-alpine` |
 | Node | **20.19+ or 22.12+** | `engines.node` in `webui/package.json`; the image builds on `node:20-alpine` |
-| Docker | any current version | only for the compose stack — everything else runs without it |
+| Docker | any current version | the compose stack and `make test-postgres` — everything else runs without it |
 | `nats` CLI | any current version | optional, for inspecting KV buckets |
 
-No Oracle client is needed. The Oracle driver is pure Go (`sijms/go-ora`), and
-SQLite comes from `modernc.org/sqlite`, so `CGO_ENABLED=0` builds work
-everywhere. You do not need an Oracle instance to build or test — which is
-itself a problem, and §3.1 of
-[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) explains why.
+No PostgreSQL client library is needed. The Postgres driver is pure Go
+(`github.com/jackc/pgx/v5`, driven through `database/sql` by its `stdlib` shim),
+and SQLite comes from `modernc.org/sqlite`, so `CGO_ENABLED=0` builds work
+everywhere.
+
+You do not need a Postgres server to build or to run `go test ./...`: the
+integration suite in `internal/pgintegration` skips every test when
+`TEST_POSTGRES_DSN` is unset. You do need one to have actually exercised the
+production storage path, which is what `make test-postgres` is for — it starts a
+throwaway container, runs the suite against it and removes it. CI runs the same
+suite against a service container and fails if it skipped.
 
 ---
 
@@ -58,6 +69,33 @@ npm run build       # writes ../web
 `go test ./...` starts a real embedded JetStream server for the messaging and
 end-to-end tests, so it needs a free loopback port and takes appreciably longer
 than a unit suite. It does not need Docker.
+
+```bash
+make test-postgres   # the same suite against a throwaway PostgreSQL container
+```
+
+That is the one part of `go test ./...` which is *not* run by default:
+`internal/pgintegration` skips unless `TEST_POSTGRES_DSN` names a server, and it
+is the only coverage the production SQL has. Run it before opening a pull
+request that touches a `repository.go`, a migration, or anything about how a
+value is bound or compared. CI runs it too, and fails the step if it skipped —
+so a change that breaks the Postgres path is red there rather than discovered in
+a deploy window.
+
+### Version stamping
+
+`make build` is not quite `go build`: it passes `-ldflags -X` to write the
+version, the short commit and a UTC build date into `internal/buildinfo`, which
+is what `./central-config --version` and `./testconsole --version` print. A
+plain `go build` leaves the defaults — `dev`, `none`, `unknown` — and that is
+fine: it is how a laptop binary tells you what it is. `make version` prints what
+the stamp would be, and `make build VERSION=v1.2.3` overrides it for a release
+pipeline that knows the version it is cutting better than `git describe` does.
+The Dockerfile takes the same three values as build arguments and repeats them
+as OCI image labels.
+
+`--version` is answered before any configuration is read and before the database
+or NATS is dialled, so it works on a machine that has neither.
 
 ### Formatting and linting
 
@@ -165,13 +203,17 @@ reasoning is often the only record of what the code is defending against.
 
 - **A test for every behavioural change.** Not for a rename or a comment; for
   anything that changes what the service does with a request, a row or a key.
-- **A note on what you could not verify.** The Oracle repositories have never
-  run against Oracle (`docs/PRODUCTION_READINESS.md` §3.1), so if you touched
-  Oracle-only SQL, say that it is compile-verified only. That is an acceptable
-  state to be in and a bad thing to leave implicit.
+- **A note on what you could not verify.** If you changed Postgres-only SQL and
+  did not run `make test-postgres`, say so — CI will run it, but the pull request
+  should not imply you watched it pass. And nothing here has run in a production
+  deployment yet (`docs/PRODUCTION_READINESS.md` §3.1), so an integration suite
+  passing is evidence, not a guarantee. That is an acceptable state to be in and
+  a bad thing to leave implicit.
 - **`migrations/` and `internal/database/sqlite.go` changed together.** The
-  schema is defined twice and nothing keeps the two in step. Because every test
-  runs against SQLite, a divergence shows up as a green build against a schema
+  schema is defined twice and nothing keeps the two in step. A missing *table*
+  is now caught, because `internal/pgintegration` applies `migrations/` itself
+  and the repositories would fail against it; a column that merely *differs*
+  between the two is not, and shows up as a green build against a schema
   production does not have.
 - **Documentation changed with the behaviour.** A new environment variable goes
   in `.env.example`; a new metric in `docs/OBSERVABILITY.md`; a change to what
@@ -181,24 +223,37 @@ reasoning is often the only record of what the code is defending against.
 
 ### On test coverage
 
-Coverage across the three domains is uneven, and it is worth knowing which side
-of the line you are on:
+The three config domains carry the same three test files each, so there is no
+thinner one to match by accident:
 
 | Package | What exists |
 |---|---|
-| `internal/flagsconfig` | service, handler and SQLite repository tests — the fullest coverage in the repository |
-| `internal/microconfig` | service tests only |
-| `internal/localization` | service tests only |
+| `internal/flagsconfig` | service, handler and SQLite repository tests |
+| `internal/microconfig` | service, handler and SQLite repository tests |
+| `internal/localization` | service, handler and SQLite repository tests |
+| `internal/pgintegration` | all three PostgreSQL repositories and the audit store, against a live server |
 | `internal/app` | auth and scope middleware, read scoping, rate limiting, audit, liveness, observability, reconcile partial/prune, end-to-end stack |
 | `internal/messaging` | keys, publisher (including skip and revision conflict), reconciler (prune, refusal, mid-sweep writes) |
 | `pkg/configclient` | scoping and a full integration test against embedded JetStream |
 
-`flagsconfig` is the pattern to copy: `service_test.go` for validation and
-publish behaviour, `handler_test.go` for status-code mapping,
-`repository_sqlite_test.go` for the SQL. **New work should not make the
-imbalance worse** — if you are changing `microconfig` or `localization`, that is
-the moment to add the handler or repository test that is missing rather than
-matching the thinner standard.
+`flagsconfig` is still the one to read first, because the split is the same in
+all three: `service_test.go` for validation and publish behaviour,
+`handler_test.go` for status-code mapping, `repository_sqlite_test.go` for the
+SQL. A fourth domain gets the same three files, **plus a case in
+`internal/pgintegration`** — the Postgres repositories are the ones a deployment
+runs, and a domain that exists only in the SQLite tests is a domain whose
+production SQL nothing has executed.
+
+`internal/pgintegration` is one package rather than a file per domain because
+its harness — schema creation, applying `migrations/`, seeding, teardown — would
+otherwise be copied four times, and Go cannot share a helper that lives in a
+`_test.go` file. Each test gets a fresh schema of its own, so tests do not have
+to coordinate over identity sequences or the reference-table delete guards.
+
+**What that suite still does not cover is everything above the repositories.**
+`internal/app`'s end-to-end and handler tests run on SQLite alone, so the
+routing, scoping and publish wiring is verified against the mirror schema rather
+than the real one (`docs/PRODUCTION_READINESS.md` §3.1).
 
 ---
 
@@ -207,7 +262,8 @@ matching the thinner standard.
 Flags, appsettings and localization are three instances of one shape, and the
 shape is spread across the codebase rather than abstracted. Adding a fourth —
 say routing rules, or per-service rate limits — touches **around 45 sites in 13
-existing files**, plus a new package of its own and the web console.
+existing files**, plus a new package of its own, a case in the PostgreSQL
+integration suite, and the web console.
 
 Roughly half of those sites do not fail to compile if you miss them. They fail
 at runtime, and several fail *silently*: the write returns `200`, the row is in
@@ -226,8 +282,8 @@ Six files, following the existing three packages exactly:
 |---|---|
 | `model.go` | the row struct with its JSON tags, `Page`, and the filter types |
 | `errors.go` | sentinel errors: invalid-input, not-found, `…Exists` for each natural unique key, and `ErrConflict` for a lost optimistic-concurrency race |
-| `repository.go` | the `Repository` interface, plus the Oracle implementation and `ListAllForReconcile` |
-| `repository_sqlite.go` | the SQLite mirror — `?` binds instead of `:1`, `LIMIT/OFFSET` instead of `OFFSET … FETCH NEXT` |
+| `repository.go` | the `Repository` interface, plus the PostgreSQL implementation and `ListAllForReconcile` |
+| `repository_sqlite.go` | the SQLite mirror — `?` binds instead of `$1`; the `LIMIT/OFFSET` paging is the same on both |
 | `service.go` | validation, `normalizePage`, the write-through publish, the delete purge, and the size check |
 | `handler.go` | HTTP handlers plus a single `writeErr` that maps every sentinel to a status |
 
@@ -244,8 +300,12 @@ Points that are easy to get wrong, all of them learned from the existing three:
 - **Check the payload size against `messaging.MaxValueSize` before the database
   write**, if the domain carries a document. Accepting it and failing at publish
   produces a `201` for a row that can never be distributed.
-- **Bind CLOB columns through `database.CLOB`.** go-ora sends a Go string as
-  `VARCHAR2`, which any real document overflows.
+- **Give a document column `TEXT`, and bind it as a plain Go string.** There is
+  no wrapper type to remember: Postgres takes a string straight into `TEXT`.
+  Resist `jsonb` — the document is republished to KV verbatim and the publisher
+  skips a write whose bytes already match, so a column that re-emits with its
+  own key ordering would make every sweep decide every row had changed and
+  republish the whole tree to the fleet on every cycle.
 - **Map `database.IsUniqueViolation` to your `…Exists` error**, so a race
   between two creates is a `409` rather than a `500`.
 - **Read the previous row before an update that can move it**, so the service
@@ -254,10 +314,15 @@ Points that are easy to get wrong, all of them learned from the existing three:
 
 ### 2. `migrations/NNN_config_<domain>.sql`
 
-Oracle DDL: table, constraints, indexes. If it has foreign keys into
-`CONFIG_ENVIRONMENTS` or `CONFIG_MICROSERVICES`, note the apply order in a
-comment — the file numbers are already not the dependency order
-(`docs/PRODUCTION_READINESS.md` §3.4), so do not make that worse silently.
+PostgreSQL DDL: table, constraints, indexes. **The file numbers are the apply
+order**, so take the next number after everything your foreign keys reference —
+`CONFIG_ENVIRONMENTS` is `001` and `CONFIG_MICROSERVICES` is `002`. That
+property is exercised on every CI run, because `internal/pgintegration` applies
+the directory in lexical order for each of its tests; a number out of dependency
+order is a red build rather than a puzzle for whoever runs the DDL first.
+`migrations/001` states the conventions the directory relies on — unquoted
+UPPER CASE identifiers, `GENERATED BY DEFAULT AS IDENTITY`, `BIGINT` ids and
+`TIMESTAMPTZ` timestamps — read them before adding a file.
 
 ### 3. `internal/database/sqlite.go` — ⚠ silent
 
@@ -299,7 +364,7 @@ carries a timestamp that must not count as a change on its own.
 
 The import; the `<domain>Repository` interface pairing the domain `Repository`
 with the lister; the `newRepositories` signature and **both** of its return arms
-(Oracle and SQLite); the service and handler construction in `NewApp`; the
+(PostgreSQL and SQLite); the service and handler construction in `NewApp`; the
 argument to `NewRouter`; the field on the `inventoryHandler` literal; the
 `<domain>Lister` interface; the `<domain>ReconcileSource` type with its `Name`,
 `Bucket` and `Resync` methods; and — **⚠ silent** — registering that source in
@@ -405,10 +470,26 @@ target-environment table and the read-scoping table), `docs/OBSERVABILITY.md`
 (the `event.dataset` list), `README.md` (the key layout), and `.env.example` if
 you added a variable.
 
+### 16. `internal/pgintegration/<domain>_test.go`
+
+Not optional, and not covered by the SQLite repository test from §1. The
+Postgres repository is the one a deployment runs, and until there is a case here
+its SQL has been checked by the compiler and nothing else. Follow
+`flags_test.go`: create, read back, list and page, the guarded update that has
+to answer a conflict on a stale timestamp, and — via `installRacingWriter` — the
+create that loses a race and must come back as your `…Exists` sentinel rather
+than a `500`. The harness hands you a freshly migrated, freshly seeded schema of
+your own, so a test may write whatever it likes and drops it afterwards.
+
+If the domain carries a document, add it to the large-document round trip too:
+that is the test which says the bytes an admin sent are the bytes KV will be
+handed, and the byte-identical publish skip depends on it.
+
 ### Before you call it done
 
 ```bash
 go test ./... && go test -race ./...
+make test-postgres            # §16 — otherwise that suite silently skips
 ```
 
 Then, against the two-terminal stack: create a row through the API, confirm the

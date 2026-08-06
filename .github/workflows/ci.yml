@@ -1,9 +1,10 @@
 # The gate CONTRIBUTING.md describes, run automatically instead of by hand.
 #
 # Deliberately one job. A contributor wants one green tick, not six amber ones
-# to correlate; the whole thing is a few minutes because the Go suite is
-# hermetic — it boots an embedded NATS server rather than needing a service
-# container, so there is nothing to orchestrate.
+# to correlate; the whole thing is a few minutes because the Go suite needs
+# almost nothing orchestrated — it boots an embedded NATS server rather than a
+# broker container, and the one service container it does need (PostgreSQL,
+# below) is declared here and waited on by the runner rather than by us.
 name: CI
 
 on:
@@ -26,6 +27,42 @@ jobs:
     name: build, test, lint
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # PostgreSQL is the production source of truth. Without this container every
+    # test would run against the SQLite mirror, leaving the storage path a
+    # deployment actually uses as the one path no gate exercises
+    # (docs/PRODUCTION_READINESS.md §3.1 and §3.6). A throwaway container costs
+    # seconds, which is the whole argument for standing one up here.
+    #
+    # internal/pgintegration applies migrations/*.sql into a schema of its own
+    # per test, so this container starts empty and nothing has to prepare it.
+    # The image tag is pinned for the same reason golangci-lint's version is: a
+    # new major should turn CI red on the commit that bumps this line, not on an
+    # unrelated pull request.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: central_config_test
+        ports:
+          - 5432:5432
+        # The runner holds the steps back until this passes, so nothing in the
+        # suite needs a retry loop of its own. Without it the first connection
+        # races the server's own initdb and fails on a database that is about to
+        # exist.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d central_config_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      # Set once for the whole job so the two Go test steps below cannot drift
+      # apart. 127.0.0.1 rather than localhost: the service port is published on
+      # the runner's IPv4 loopback only, and a resolver that answers ::1 first
+      # turns that into a connection refused that reads like a broken container.
+      TEST_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/central_config_test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v7
@@ -62,9 +99,34 @@ jobs:
         run: go vet ./...
 
       # -count=1 defeats the test result cache; -race because the reconciler,
-      # the rate limiter and configclient are all concurrent.
+      # the rate limiter and configclient are all concurrent. TEST_POSTGRES_DSN
+      # comes from the job env above, which is what makes internal/pgintegration
+      # run here instead of skipping the way it does on a laptop with no server.
       - name: go test
         run: go test -race -count=1 ./...
+
+      # The integration suite fails open by design: with no database configured
+      # every test skips and the package reports ok. That is the right behaviour
+      # for a contributor and a useless one for a gate, because a typo in the DSN
+      # above, a renamed service or a container that never became healthy would
+      # all leave this workflow green while testing nothing. So the suite is run
+      # once more verbosely and the skips are counted — the cost is a few
+      # seconds, and what it buys is that "CI covers Postgres" stays a fact
+      # rather than a claim.
+      #
+      # The log goes to RUNNER_TEMP: a file in the workspace would be picked up
+      # by the working-tree check at the end of this job.
+      - name: the Postgres suite ran rather than skipped
+        run: |
+          set -eo pipefail
+          log="$RUNNER_TEMP/pgintegration.log"
+          go test -count=1 -v ./internal/pgintegration/ | tee "$log"
+          if grep -q '^--- SKIP' "$log"; then
+            echo "::error::The PostgreSQL integration suite skipped. TEST_POSTGRES_DSN did not reach the service container."
+            grep '^--- SKIP' "$log"
+            exit 1
+          fi
+          echo "ran $(grep -c '^--- PASS' "$log") PostgreSQL integration tests against a live server"
 
       # A contributor running `go mod tidy` should get an empty diff, not
       # unrelated churn mixed into their change.

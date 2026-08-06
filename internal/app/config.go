@@ -17,8 +17,8 @@ import (
 )
 
 type Config struct {
-	// DBDriver selects the storage backend: "oracle" (production, the source of
-	// truth) or "sqlite" (local test stack only — see internal/database/sqlite.go).
+	// DBDriver selects the storage backend: "postgres" (production, the source
+	// of truth) or "sqlite" (local test stack only — see internal/database/sqlite.go).
 	DBDriver     string
 	DBConnString string
 	ServerPort   string
@@ -68,7 +68,7 @@ type Config struct {
 
 func LoadConfig() *Config {
 	return &Config{
-		DBDriver:          getEnv("DB_DRIVER", "oracle"),
+		DBDriver:          getEnv("DB_DRIVER", "postgres"),
 		DBConnString:      getEnv("CONN_STRING", ""),
 		ServerPort:        getEnv("PORT", ":8080"),
 		DBMaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 0),
@@ -104,7 +104,7 @@ func (c *Config) LogOptions() obs.LogOptions {
 
 // defaultWriteRateLimit is per caller per minute. Admin writes are typed by
 // humans or applied by a deploy script in batches; a couple per second is far
-// above real use and far below what it takes to hurt Oracle or KV.
+// above real use and far below what it takes to hurt the database or KV.
 const defaultWriteRateLimit = 120
 
 func getEnv(key, fallback string) string {

@@ -1,0 +1,20 @@
+# Blank issues are off so that the security route is offered before an empty
+# textarea is: an issue on this repository is world-readable, and a report that
+# describes a way to reach the admin API is a working exploit published for
+# anyone watching. The two forms cover everything that belongs in public.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ErasedKyte/Central-Config-Stream/security/advisories/new
+    about: >-
+      Privately, through GitHub's vulnerability reporting — visible only to the maintainer. Use this
+      for anything that reaches the admin API, widens a token's environment scope, or writes to KV.
+      SECURITY.md has the scope, the timelines and what a useful report contains.
+
+  - name: Read the documentation first
+    url: https://github.com/ErasedKyte/Central-Config-Stream#documentation
+    about: >-
+      The consumer contract, the security model, the observability guide and an honest list of known
+      gaps. Several things that look like bugs are documented behaviour — the int/bool split on
+      `enabled`, the 404 on an out-of-scope read, and the id living in the body of a PUT.

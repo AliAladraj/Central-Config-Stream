@@ -1,0 +1,51 @@
+# CodeQL asks what is wrong with this repository's own code; security.yml asks
+# what is wrong with its dependencies. Hence no path filter here — the thing
+# being analysed *is* the diff, so every pull request is a reason to run.
+#
+# There is no push trigger. The weekly run on the default branch is what builds
+# the baseline that pull-request runs are compared against; re-analysing main on
+# every merge would cost a few minutes to learn what the schedule already knows.
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+  # The one thing in either security workflow that writes: the SARIF upload that
+  # puts findings in the Security tab instead of in a contributor's way.
+  security-events: write
+
+jobs:
+  analyze:
+    name: analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      # Go and JavaScript fail independently; a broken Go build should not hide
+      # whatever the JS analysis had to say.
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          # Nothing to build: CodeQL reads the sources directly, and `none`
+          # stops it from running an install for no purpose.
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4

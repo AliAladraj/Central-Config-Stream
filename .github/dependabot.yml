@@ -71,8 +71,8 @@ updates:
           - minor
           - patch
 
-  # The actions used by .github/workflows/ci.yml. These are pinned by major
-  # tag, so this mostly surfaces the major bumps that need a look.
+  # The actions used by the workflows in .github/workflows/. These are pinned
+  # by major tag, so this mostly surfaces the major bumps that need a look.
   - package-ecosystem: github-actions
     directory: /
     schedule:

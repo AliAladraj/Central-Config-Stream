@@ -1,0 +1,4 @@
+# One maintainer, every path. This exists so review is requested automatically
+# rather than remembered, and so the Security tab has an owner to route a
+# private advisory to.
+* @ErasedKyte

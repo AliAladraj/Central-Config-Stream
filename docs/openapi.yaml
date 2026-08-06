@@ -1,0 +1,2075 @@
+openapi: 3.1.0
+
+info:
+  title: central-config admin API
+  version: 1.0.0
+  summary: The control plane's HTTP admin API — the only way configuration is written.
+  description: |-
+    This is the **control plane**. Admins and deploy pipelines write here; the
+    database is the source of truth and every write is also written through to
+    NATS JetStream KV. Consuming services never call any route in this document
+    on the request path — they watch KV and serve from an in-memory cache.
+    [`docs/CONSUMER_CONTRACT.md`](CONSUMER_CONTRACT.md) is the other half of the
+    story, and `pkg/configclient` implements it for Go.
+
+    The document describes the handlers as they behave, not as they might ideally
+    be shaped. Several things here will look wrong until you know why:
+
+    - **`enabled` is an integer on this API and a boolean in KV.** It is not a
+      mistake and it is not being fixed — see the schema, and the README's
+      [int/bool trap](../README.md#the-intbool-trap).
+    - **The `PUT` routes carry the row id in the body, not in the path.** They
+      are registered at collection paths (`/flags/values`, `/configs/values`,
+      `/localization/values`) and read `id` out of the JSON.
+    - **A single row fetched by id that lies outside the caller's token scope
+      answers 404, not 403.** A 403 would confirm the row exists.
+    - **Localization is asymmetric**: it creates at `/localization`, deletes at
+      `/localization/{id}`, and updates at `/localization/values`.
+
+    One concept wears several names. The per-service JSON tree is *appsettings*
+    in prose, `/configs` here, `MICROCONFIG` in KV, and `SETTINGS_JSON` in the
+    database. They are all the same thing.
+
+    One shape to guard against before writing a client: **an empty listing comes
+    back as `null`, not `[]`**. The repositories build their result into a nil
+    slice and Go marshals that as `null`; only `/audit`, which starts from an
+    empty slice, always answers `[]`. A scoped token muddies it further — the
+    scope filter re-marshals what survives, so the same empty page is `[]` for a
+    narrowed credential and `null` for a full-scope one. The list schemas below
+    admit `null`; read it as no rows.
+
+    Every error body in this document is the same `{"error": "..."}` envelope,
+    with one exception that is not listed under any operation because no
+    operation here can produce it: routes are registered method-first, so a path
+    that exists but not with the method sent is answered by the router itself
+    with a **405**, Go's plain-text `Method Not Allowed` and an `Allow` header —
+    not JSON. A client that decodes every error body as JSON should expect it.
+
+    A note on the schemas: each is one Go struct, and the handlers decode a
+    request into the same struct they marshal a response from. So the six that
+    double as request bodies carry no `required` list — every field they name is
+    present in every response, but which of them a *request* has to carry differs
+    per operation, and that is stated on the field. The response-only schemas do
+    mark what is always there.
+
+    The API carries no version of its own — nothing in the service negotiates or
+    advertises one, and `SERVICE_VERSION` labels the binary rather than the
+    contract. `info.version` above is this document's, and it moves when the
+    routes do.
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: '{scheme}://{authority}'
+    description: |-
+      There is no canonical host: the service binds whatever `PORT` says and is
+      reached wherever the deployment puts it. The defaults below are the local
+      stack from `deploy/compose/docker-compose.yml`, whose admin token is
+      `local-dev-token` and whose seeded data lives in environment 1 (`dev`).
+
+      `scheme` is `http` unless `TLS_CERT_FILE` and `TLS_KEY_FILE` are both set —
+      with them the server floor is TLS 1.3 and responses carry HSTS; without
+      them it serves plain HTTP and warns at startup, on the assumption TLS
+      terminates at an ingress.
+    variables:
+      scheme:
+        default: http
+        enum: [http, https]
+        description: '`https` once `TLS_CERT_FILE`/`TLS_KEY_FILE` are configured, or at the ingress.'
+      authority:
+        default: 'localhost:8080'
+        description: Host and port. `:8080` is the `PORT` default and what the compose stack publishes.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: probes
+    description: |-
+      Readiness, liveness and the Prometheus scrape. The only three routes that
+      take no credential: two are what an orchestrator polls before it has any,
+      and the third carries counters rather than configuration values.
+  - name: inventory
+    description: |-
+      Every editable row with its primary key. Admin tools need this because the
+      ids an update targets are data, not something a caller can know up front.
+  - name: audit
+    description: |-
+      The write trail. Flipping a value here changes the behaviour of every
+      consuming service within milliseconds, so who changed what, and when, has
+      to outlive the request — KV only ever holds the current value.
+  - name: environments
+    description: |-
+      The environment reference table. Its ids are what every token scope, every
+      KV key prefix and every other domain's `environmentId` are expressed in.
+  - name: microservices
+    description: |-
+      The microservice reference table. A microservice belongs to no environment;
+      its appsettings and bundles do.
+  - name: appsettings
+    description: |-
+      The per-service JSON tree, one row per (microservice, environment). Served
+      under `/configs`, published to the `MICROCONFIG` bucket as one document so
+      a consumer can never observe half an update.
+  - name: flags
+    description: |-
+      Feature flag definitions and their per-environment values. Unlike
+      appsettings and localization a flag value is environment-wide rather than
+      per-service, so every consumer in an environment watches every flag in it.
+  - name: localization
+    description: |-
+      Translation bundles, one JSON document per (microservice, environment,
+      locale). The whole locale is one KV value so an application loads a locale
+      atomically.
+
+paths:
+  /health:
+    get:
+      tags: [probes]
+      operationId: getHealth
+      summary: Readiness — pings the database and reports NATS
+      description: |-
+        Readiness, and it really checks: the database is pinged with a two-second
+        bound so a wedged pool cannot hang the probe, and NATS is reported from
+        the live connection state. NATS counts against health only when
+        publishing is configured — `PUBLISH_ENABLED=false` is a deliberate mode,
+        not an outage, and reports `disabled`.
+
+        A degraded answer is 503 so an orchestrator takes the pod out of the load
+        balancer. It is deliberately not the liveness probe: killing every replica
+        during a NATS outage would take the admin API's read paths down with it,
+        exactly when an operator needs them to see and change configuration.
+      security: []
+      responses:
+        '200':
+          description: The database answered and NATS is connected or deliberately disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                status: ok
+                database: ok
+                nats: connected
+        '503':
+          description: |-
+            The database ping failed, or publishing is enabled and NATS is
+            disconnected. Writes still succeed in the second case — the database
+            is the source of truth and accepts them — but the KV publish fails and
+            is healed by the reconciler once NATS returns.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                status: degraded
+                database: ok
+                nats: disconnected
+
+  /livez:
+    get:
+      tags: [probes]
+      operationId: getLivez
+      summary: Liveness — static, touches no dependency
+      description: |-
+        Answers only "this process is running". It touches neither the database
+        nor NATS on purpose: an outage in either is a reason to stop taking
+        traffic, which is what `/health` is for, not a reason for the orchestrator
+        to restart every pod.
+      security: []
+      responses:
+        '200':
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Livez'
+
+  /metrics:
+    get:
+      tags: [probes]
+      operationId: getMetrics
+      summary: Prometheus exposition
+      description: |-
+        Publish success and failure counts, reconcile drift, database ping
+        failures and HTTP request counters, in the Prometheus text format. Open
+        like the probes: it carries counters, not configuration values. The HTTP
+        label is the route pattern the mux matched, so the label set is bounded by
+        the routing table rather than by whatever paths get probed.
+      security: []
+      responses:
+        '200':
+          description: The current counter and gauge values.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP config_publish_total Config values published to KV.
+                # TYPE config_publish_total counter
+                config_publish_total 42
+
+  /inventory:
+    get:
+      tags: [inventory]
+      operationId: listInventory
+      summary: Every editable row with its id
+      description: |-
+        The three domains in one response, each paged independently by the same
+        `limit` and `offset`, so a caller walks all three together. The underlying
+        queries return every row and the page is taken in the handler — which is
+        why the limit matters: the response is the whole configuration estate
+        otherwise.
+
+        A scoped token sees only its own environments, and the page is counted
+        over the rows it is allowed to see rather than over gaps left by
+        another's.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of each collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Inventory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /audit:
+    get:
+      tags: [audit]
+      operationId: listAudit
+      summary: The write audit trail
+      description: |-
+        Most recent first — an audit reader is almost always asking "what just
+        happened". Every mutating request that reached a real route is here,
+        including the ones the guard rejected, which is the trail that shows
+        someone probing production with the wrong credential.
+
+        Recorded bodies are redacted: any field whose name contains a
+        secret-shaped fragment (`password`, `token`, `connectionString` and
+        friends, matched case-insensitively at any depth) is stored as
+        `[redacted]`, a non-JSON body is dropped entirely, and the result is
+        truncated to fit the column.
+
+        A scoped token's listing is narrowed in SQL rather than after the fact,
+        and rows that carry no environment at all — the 401 and 404 envelopes, and
+        the writes that belong to no environment — are invisible to it: their body
+        is the one thing about them that is not already known.
+      parameters:
+        - name: actor
+          in: query
+          required: false
+          description: |-
+            Exact match on the token name that made the write, as configured in
+            `ADMIN_TOKENS`. The single shared `ADMIN_TOKEN` is recorded as
+            `shared`.
+          schema:
+            type: string
+          example: ci-dev
+        - name: from
+          in: query
+          required: false
+          description: |-
+            Inclusive lower bound. Accepts either a plain `YYYY-MM-DD` date or a
+            full RFC 3339 instant, because the range is the common case and typing
+            an instant by hand is not.
+          schema:
+            type: string
+          example: '2026-01-01'
+        - name: to
+          in: query
+          required: false
+          description: Inclusive upper bound, in the same two forms as `from`.
+          schema:
+            type: string
+          example: '2026-01-31T23:59:59Z'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of the trail, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /environments:
+    get:
+      tags: [environments]
+      operationId: listEnvironments
+      summary: List environments
+      description: |-
+        Narrowed to the caller's scope by the environment's own id rather than by
+        an `environmentId` field, because here the row *is* the environment.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of environments.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/Environment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [environments]
+      operationId: createEnvironment
+      summary: Create an environment
+      description: |-
+        Full-scope tokens only. Adding an environment changes the set every other
+        scope is expressed in, so a token narrowed to environments 1 and 2 cannot
+        mint a third.
+
+        Only `name` is read; it is trimmed, must be non-empty and at most 100
+        characters — the column's width, and an empty name makes an unusable admin
+        UI. Reference rows have no KV representation of their own, so nothing is
+        published: keys appear when an appsettings, bundle or flag-value row does.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Environment'
+            example:
+              name: staging
+      responses:
+        '201':
+          description: The stored row, read back by its natural key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Environment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /environments/{id}:
+    delete:
+      tags: [environments]
+      operationId: deleteEnvironment
+      summary: Delete an environment
+      description: |-
+        The one route where `{id}` is itself the environment the scope check runs
+        against, rather than a row that happens to live in one.
+
+        An environment still referenced by a flag value, an appsettings row or a
+        bundle is refused with 409 rather than cascaded. Losing an environment by
+        accident would take its whole configuration with it.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /microservices:
+    get:
+      tags: [microservices]
+      operationId: listMicroservices
+      summary: List microservices
+      description: |-
+        Not narrowed by scope: a microservice belongs to no environment, so there
+        is nothing to narrow it by. Authentication still applies.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of microservices.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/Microservice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [microservices]
+      operationId: createMicroservice
+      summary: Create a microservice
+      description: |-
+        Any valid token may issue this: the row belongs to no environment and
+        publishes nothing to KV, so there is no scope for it to escape. Only
+        `name` is read, on the same terms as an environment's.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Microservice'
+            example:
+              name: catalog-api
+      responses:
+        '201':
+          description: The stored row, read back by its natural key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Microservice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /microservices/{id}:
+    delete:
+      tags: [microservices]
+      operationId: deleteMicroservice
+      summary: Delete a microservice
+      description: |-
+        Full-scope tokens only. The row itself belongs to no environment, but what
+        points at it does — a scoped token deleting it would reach every
+        environment at once — so the guard treats it as global.
+
+        A microservice still referenced by an appsettings row or a bundle is
+        refused with 409 rather than cascaded.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /configs/{id}:
+    get:
+      tags: [appsettings]
+      operationId: getMicroserviceByConfigPath
+      summary: Get a microservice definition
+      description: |-
+        The odd one out under `/configs`: `{id}` is a **microservice** id and the
+        response is the microservice definition, which belongs to no environment.
+        The appsettings rows live one level down, under `/configs/values`.
+
+        Because the row names no environment, this read is authenticated but not
+        narrowed — there is nothing on it to narrow by.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '200':
+          description: The microservice definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Microservice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /configs/values:
+    get:
+      tags: [appsettings]
+      operationId: listMicroserviceConfigs
+      summary: List appsettings rows
+      description: |-
+        Both filters are optional and a zero id matches everything.
+
+        A scoped token's page is filtered on the way out, after the database has
+        already paged, so it can come back holding fewer than `limit` rows without
+        that meaning the end of the collection. That is the cost of not teaching
+        the domain handlers about credentials.
+      parameters:
+        - name: microserviceId
+          in: query
+          required: false
+          description: Restrict to one microservice. Absent or `0` matches every one.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 1
+        - name: environmentId
+          in: query
+          required: false
+          description: Restrict to one environment. Absent or `0` matches every one.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 1
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of appsettings rows.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/MicroserviceAppSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [appsettings]
+      operationId: createMicroserviceConfig
+      summary: Create an appsettings row
+      description: |-
+        `microserviceId`, `environmentId` and `settingsJson` are required; `id` and
+        `updatedAt` are assigned by the database and anything sent in them is
+        ignored.
+
+        This is the create where the body *is* authoritative for the scope check:
+        `environmentId` is what gets inserted, so a token is held to the
+        environment it names.
+
+        The tree is written to the database first and pushed to KV after. The KV
+        write is best effort — a failure is logged, the request still succeeds, and
+        the reconciler heals the drift within `RECONCILE_INTERVAL`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MicroserviceAppSettings'
+            example:
+              microserviceId: 2
+              environmentId: 2
+              settingsJson:
+                http:
+                  timeoutMs: 1500
+      responses:
+        '201':
+          description: The stored row, read back by its natural key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicroserviceAppSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    put:
+      tags: [appsettings]
+      operationId: updateMicroserviceConfig
+      summary: Update an appsettings row — the id goes in the body
+      description: |-
+        **No `{id}` in the path.** The route is the collection and the row is named
+        by `id` in the JSON body. `microserviceId`, `environmentId` and
+        `settingsJson` are required too, and all three are rewritten: an update may
+        move the row to a different (microservice, environment), which is a
+        different KV key.
+
+        When it does move, the key it used to feed is read *before* the write and
+        deleted after — afterwards there is nothing left to derive it from, and
+        leaving it behind means consumers in the old environment keep serving
+        settings no row backs. Both environments are checked against the caller's
+        scope, so a token cannot push a row out of an environment it holds into one
+        it does not, or vice versa.
+
+        The scope check reads the row's current environment from the database
+        rather than trusting the body, because on a row-addressed route an
+        `environmentId` in the body is a claim rather than a fact.
+
+        Send `expectedUpdatedAt` to make the write conditional; see the schema.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MicroserviceAppSettings'
+            example:
+              id: 203
+              microserviceId: 2
+              environmentId: 2
+              settingsJson:
+                http:
+                  timeoutMs: 2000
+              expectedUpdatedAt: '2026-08-05T23:27:56Z'
+      responses:
+        '200':
+          description: The stored row as it is after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicroserviceAppSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /configs/values/{id}:
+    get:
+      tags: [appsettings]
+      operationId: getMicroserviceConfig
+      summary: Get one appsettings row
+      description: |-
+        `{id}` is the appsettings row id, not the microservice id — which is why a
+        consumer hydrating over HTTP has to be told the row ids as deployment
+        configuration, and why `GET /inventory` exists.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '200':
+          description: The appsettings row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicroserviceAppSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFoundOrOutOfScope'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      tags: [appsettings]
+      operationId: deleteMicroserviceConfig
+      summary: Delete an appsettings row
+      description: |-
+        Removes the row and the KV key it fed. The key is purged here rather than
+        left to the next full reconcile sweep, which would leave consumers serving
+        deleted settings for up to a whole interval.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /flags:
+    get:
+      tags: [flags]
+      operationId: listFlags
+      summary: List flag definitions
+      description: |-
+        The definitions, not their values. A definition carries no environment, so
+        this listing is authenticated but not narrowed.
+      parameters:
+        - name: flagKey
+          in: query
+          required: false
+          description: Exact match on the flag key. Absent matches every flag.
+          schema:
+            type: string
+          example: search_v2
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of flag definitions.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/Flag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [flags]
+      operationId: createFlag
+      summary: Create a flag definition
+      description: |-
+        `flagKey` is required and validated on the way in, because it becomes part
+        of a KV key: the `FLAGS` key is `{environmentId}.{flagKey}`, so a key
+        containing a dot would be ambiguous to a consumer splitting on the
+        separator — and would be republished by every reconcile sweep from then on.
+        Letters, digits, dash and underscore only, up to 128 characters.
+
+        A flag on its own has no per-environment value yet, so nothing is
+        published: the KV entry appears when the first value row is created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Flag'
+            example:
+              flagKey: search_v2
+              isActive: 1
+      responses:
+        '201':
+          description: The stored definition, read back by its key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Flag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /flags/{id}:
+    get:
+      tags: [flags]
+      operationId: getFlag
+      summary: Get one flag definition
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '200':
+          description: The flag definition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Flag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      tags: [flags]
+      operationId: deleteFlag
+      summary: Delete a flag definition and every value hanging off it
+      description: |-
+        Full-scope tokens only, and this is the clearest case for it: the delete
+        removes the flag, its value rows in *every* environment, and the KV keys
+        those values fed, in one transaction. A token scoped to dev must not be
+        able to reach production by deleting a definition they share.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /flags/values:
+    get:
+      tags: [flags]
+      operationId: listFlagValues
+      summary: List flag values
+      description: |-
+        The only listing whose rows carry a field the single-row read does not:
+        `flagKey` is joined in, because without it a caller cannot tell which flag
+        a row belongs to without a second request per row.
+      parameters:
+        - name: environmentId
+          in: query
+          required: false
+          description: Restrict to one environment. Absent or `0` matches every one.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 1
+        - name: flagKey
+          in: query
+          required: false
+          description: Exact match on the flag key. Absent matches every flag.
+          schema:
+            type: string
+          example: dark_mode
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of flag values, each with its flag key resolved.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/FlagValueRow'
+              example:
+                - id: 100
+                  environmentId: 1
+                  flagId: 7
+                  flagKey: search_v2
+                  value: 'on'
+                  enabled: 1
+                  updatedAt: '2026-08-05T23:27:56Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [flags]
+      operationId: createFlagValue
+      summary: Create a flag value
+      description: |-
+        `flagId` and `environmentId` are required; `value` and `enabled` default to
+        the empty string and `0` if omitted. Both parents are checked before the
+        insert, in the application rather than by the foreign key, so "no such
+        environment" comes back as a 404 instead of an opaque constraint failure.
+
+        The body's `environmentId` is authoritative for the scope check here: it is
+        what gets inserted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagValue'
+            example:
+              environmentId: 1
+              flagId: 8
+              value: 'off'
+              enabled: 0
+      responses:
+        '201':
+          description: The stored row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlagValue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    put:
+      tags: [flags]
+      operationId: updateFlagValue
+      summary: Update a flag value — the id goes in the body
+      description: |-
+        **No `{id}` in the path**, like the other two update routes. `id` is
+        required and is the flag-value row id; only `value` and `enabled` are
+        written. A flag value cannot be moved between environments, so
+        `environmentId` and `flagId` in the body are ignored — the row's real
+        environment is read from the database for the scope check.
+
+        The write goes to the database first and is then pushed to KV as
+        `{"enabled": <bool>, "value": "...", "updatedAt": "..."}`. That boolean is
+        where the int/bool conversion happens, exactly once, as `enabled != 0`.
+
+        Send `expectedUpdatedAt` to make the write conditional; see the schema.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagValue'
+            example:
+              id: 101
+              enabled: 1
+              value: 'on'
+      responses:
+        '200':
+          description: |-
+            The stored row as it is after the write. Note that it carries no
+            `flagKey` — only the listing joins that in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlagValue'
+              example:
+                id: 101
+                environmentId: 1
+                flagId: 8
+                value: 'on'
+                enabled: 1
+                updatedAt: '2026-08-05T23:29:01Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /flags/values/{id}:
+    get:
+      tags: [flags]
+      operationId: getFlagValue
+      summary: Get one flag value
+      description: |-
+        `{id}` is the flag-value row id, not the flag key and not the flag id.
+        There is no "list flag values for environment X" route keyed the way a
+        consumer thinks, which is why an HTTP cold-start fallback has to be handed
+        these row ids by hand.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '200':
+          description: The flag value, without its flag key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlagValue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFoundOrOutOfScope'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      tags: [flags]
+      operationId: deleteFlagValue
+      summary: Delete a flag value
+      description: |-
+        Removes the row and purges the KV key it fed, rather than waiting for the
+        reconciler's sweep. A consumer that sees the delete drops the key and falls
+        back to its checked-in default; one left holding a stale key goes on
+        serving a flag nothing backs until the next full sweep.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /localization:
+    get:
+      tags: [localization]
+      operationId: listLocalizations
+      summary: List translation bundles
+      description: All three filters are optional; a zero id or empty locale matches everything.
+      parameters:
+        - name: microserviceId
+          in: query
+          required: false
+          description: Restrict to one microservice. Absent or `0` matches every one.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 1
+        - name: environmentId
+          in: query
+          required: false
+          description: Restrict to one environment. Absent or `0` matches every one.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 1
+        - name: locale
+          in: query
+          required: false
+          description: Exact match on the locale. Absent matches every locale.
+          schema:
+            type: string
+          example: pt-BR
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: One page of bundles.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/Localization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [localization]
+      operationId: createLocalization
+      summary: Create a translation bundle
+      description: |-
+        Localization is the asymmetric domain: it creates here, deletes at
+        `/localization/{id}`, and updates at `/localization/values`.
+
+        `microserviceId`, `environmentId`, `locale` and `bundleJson` are all
+        required. The locale is validated for the same reason a flag key is — it is
+        a component of the KV key `{environmentId}.{microserviceId}.{locale}`, so a
+        dot inside it would produce a key no consumer can parse back into its three
+        parts. Letters, digits, dash and underscore only, up to 35 characters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Localization'
+            example:
+              microserviceId: 1
+              environmentId: 2
+              locale: en-US
+              bundleJson:
+                catalog.title: Catalog
+      responses:
+        '201':
+          description: The stored bundle, read back by its natural key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Localization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /localization/values:
+    put:
+      tags: [localization]
+      operationId: updateLocalization
+      summary: Update a translation bundle — the id goes in the body
+      description: |-
+        **No `{id}` in the path**, and note the path itself: this is the only
+        `/localization/values` route there is. `id`, `microserviceId`,
+        `environmentId`, `locale` and `bundleJson` are all required, and all four of
+        the latter are rewritten — an update may move the bundle to a different
+        (microservice, environment, locale), which is a different KV key. The key it
+        used to feed is read before the write and deleted after.
+
+        The locale is re-validated here rather than trusted because it was checked
+        on create: a locale that only an update let through still becomes a KV key,
+        and one a consumer cannot parse is republished by every sweep from then on.
+
+        Send `expectedUpdatedAt` to make the write conditional; see the schema.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Localization'
+            example:
+              id: 302
+              microserviceId: 1
+              environmentId: 2
+              locale: en-US
+              bundleJson:
+                catalog.title: Catalogue
+      responses:
+        '200':
+          description: The stored bundle as it is after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Localization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /localization/{id}:
+    get:
+      tags: [localization]
+      operationId: getLocalization
+      summary: Get one translation bundle by row id
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '200':
+          description: The bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Localization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFoundOrOutOfScope'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      tags: [localization]
+      operationId: deleteLocalization
+      summary: Delete a translation bundle
+      description: |-
+        Removes the row and the KV key it fed. Waiting for the next full reconcile
+        would leave consumers serving a deleted locale for up to a whole interval.
+      parameters:
+        - $ref: '#/components/parameters/RowId'
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /localization/lookup/{msId}/{envId}/{locale}:
+    get:
+      tags: [localization]
+      operationId: lookupLocalization
+      summary: Get a bundle by its natural key
+      description: |-
+        The one read endpoint keyed the way a consumer thinks rather than by a
+        database row id, which makes it the only one an HTTP cold-start fallback can
+        reach from what it already knows. `/configs/values/{id}` and
+        `/flags/values/{id}` both need row ids handed to them as deployment
+        configuration.
+      parameters:
+        - name: msId
+          in: path
+          required: true
+          description: The microservice id.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+          example: 1
+        - name: envId
+          in: path
+          required: true
+          description: The environment id.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+          example: 1
+        - name: locale
+          in: path
+          required: true
+          description: The locale, as stored — `pt-BR`, `en-US`.
+          schema:
+            type: string
+          example: pt-BR
+      responses:
+        '200':
+          description: The bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Localization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFoundOrOutOfScope'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |-
+        `Authorization: Bearer <secret>`, matched in constant time against every
+        configured credential without an early exit, so neither the secret nor a
+        token's position in the list leaks through response timing.
+
+        Two variables configure it. `ADMIN_TOKENS=name:scope:secret,...` names
+        credentials and scopes each to a `|`-separated list of environment ids, or
+        `*` for all of them; `ADMIN_TOKEN` is the single shared full-scope form,
+        recorded in the audit trail as the actor `shared`. **A secret may not
+        contain a comma** — entries are split on commas before they are split on
+        colons, so a comma inside a secret silently starts an entry, and possibly a
+        full-scope token, of its own.
+
+        A token's scope narrows reads as well as writes: listings return only rows
+        in the environments it names, `/inventory` and `/audit` are narrowed the
+        same way, and a single row fetched by id from outside the scope answers 404.
+
+        With neither variable set **authentication is disabled entirely** and the
+        service warns at startup. That is a development mode; every route then
+        behaves as though it were called with a full-scope token.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |-
+        Page size. Absent gives 100. **A value of `0`, or anything above 500, is
+        clamped to 500 rather than to the default** — a caller asking for too much
+        still wants rows back. A negative or non-numeric value is a 400.
+
+        A scoped token's page is filtered after the database has paged, so it may
+        hold fewer rows than this without the collection being exhausted.
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
+        default: 100
+      example: 100
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Rows to skip. Negative or non-numeric is a 400.
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
+        default: 0
+      example: 0
+    RowId:
+      name: id
+      in: path
+      required: true
+      description: |-
+        The row's primary key. Non-numeric answers 400 (`invalid id`) from the
+        handler's own parse; zero or negative answers 400 from the service's
+        validation.
+
+        On a delete the write guard runs first and cannot resolve an unparseable
+        id to an environment, so it fails closed and treats the request as
+        reaching every one: a scoped token gets **403** where a full-scope token
+        would have got the 400.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 101
+
+  responses:
+    Deleted:
+      description: |-
+        Deleted. No body. Where the row fed a KV key that key is purged on the same
+        request rather than left to the reconciler's sweep; the two reference
+        tables have no key of their own to purge.
+    BadRequest:
+      description: |-
+        The request could not be used as sent. `error` names what was wrong:
+        a body that is not JSON or exceeds 1 MiB (`invalid request body`), a
+        malformed page or filter parameter (`invalid query parameter`,
+        `invalid environmentId`), an id that is zero or negative, a `settingsJson`
+        or `bundleJson` that is not a JSON **object**, or a payload over the 512 KiB
+        KV ceiling.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notAnObject:
+              summary: settingsJson is not an object
+              description: |-
+                A top-level array or scalar is well-formed JSON that would break
+                every consumer's deserialization at once, so it is refused rather
+                than published.
+              value:
+                error: invalid settings json
+            tooLarge:
+              summary: over the 512 KiB ceiling
+              description: |-
+                The same constant the KV buckets are provisioned with. Checked
+                before the database write so a payload can never be accepted with a
+                201 and then refused by JetStream forever afterwards.
+              value:
+                error: settings json exceeds the maximum value size
+    Unauthorized:
+      description: |-
+        No bearer token, or one that matches no configured credential. Every route
+        except `GET /health`, `GET /livez` and `GET /metrics` requires one — reads
+        included, because a single unauthenticated GET was enough to walk off with
+        every appsettings tree and bundle in the estate.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: unauthorized
+    Forbidden:
+      description: |-
+        The token is valid but its scope does not cover what this write touches.
+        A route marked full-scope-only (creating an environment, deleting a
+        microservice or a flag definition) answers this for any scoped token, and so
+        does a write whose target environment could not be determined at all — the
+        guard fails closed.
+
+        Note the asymmetry with reads: **writes** out of scope are 403, but a
+        **single row read** out of scope is 404.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: token is not scoped to this environment
+    NotFound:
+      description: |-
+        The addressed row does not exist, or a row it references does not. The
+        parent checks run in the application rather than being left to the foreign
+        keys, so "no such environment" arrives as this rather than as an opaque
+        driver error behind a 500.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: environment not found
+    NotFoundOrOutOfScope:
+      description: |-
+        **Either the row does not exist, or the caller's token is not scoped to the
+        environment it lives in.** The two are deliberately indistinguishable: a 403
+        here would confirm the row exists, which is exactly what a caller probing
+        for production rows would be looking for.
+
+        It is also the answer that will waste an afternoon, so a client handling
+        this during a cold-start hydration should report both possibilities rather
+        than concluding the row is gone.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: not found
+    Conflict:
+      description: |-
+        Two different situations share this code.
+
+        A **natural key collision** — an environment or microservice name, a flag
+        key, or the (microservice, environment) and (microservice, environment,
+        locale) tuples — where the `error` names the collision. Deleting a reference
+        row that something still points at lands here too: it is refused rather than
+        cascaded, because an environment is not the kind of thing to remove by
+        accident.
+
+        A **lost optimistic-concurrency race**: the request carried
+        `expectedUpdatedAt` and the stored row no longer holds that timestamp, so
+        somebody else edited it first. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            staleWrite:
+              summary: somebody else edited it first
+              value:
+                error: flag value was modified by someone else
+            alreadyExists:
+              summary: the natural key is taken
+              value:
+                error: appsettings for this microservice and environment already exist
+            stillReferenced:
+              summary: the reference row is still pointed at
+              value:
+                error: environment still has flag, appsettings or localization rows
+    RateLimited:
+      description: |-
+        The caller's write budget is spent. Writes are limited twice: once at the
+        edge by client address, before anything about the caller has been checked,
+        and again per credential once the token is known. `Retry-After` carries the
+        whole seconds until the bucket refills.
+
+        `WRITE_RATE_LIMIT_PER_MINUTE` (default 120) sets both, and a non-positive
+        value disables the limiter entirely — it is a safety net, not something that
+        should be able to lock an operator out of production by misconfiguration.
+        Behind a proxy the address-keyed budget is the fleet's shared edge budget
+        rather than one operator's, since the peer address is the same for
+        everything arriving through it; the per-credential budget is what separates
+        operators. Reads are not limited at all: they answer from a bounded page and
+        change nothing.
+      headers:
+        Retry-After:
+          description: Whole seconds to wait before the next write will be accepted.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 3
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: too many write requests
+    ServerError:
+      description: |-
+        Something failed below the handler. The body is always this same opaque
+        message: driver errors name tables, connection strings and file paths, so
+        they go to the log instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: internal server error
+
+  schemas:
+    Error:
+      type: object
+      description: |-
+        The uniform error envelope. Every non-2xx body a handler writes is this
+        shape; the router's own 405 is the one exception, and it is described in
+        the API description above rather than under an operation.
+      properties:
+        error:
+          type: string
+          description: A short human-readable reason, safe to show an operator.
+      required: [error]
+
+    Health:
+      type: object
+      description: What `GET /health` reports about each dependency.
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: The overall verdict, and what decides between 200 and 503.
+        database:
+          type: string
+          enum: [ok, unavailable]
+          description: The result of an actual ping, bounded at two seconds.
+        nats:
+          type: string
+          enum: [connected, disconnected, disabled]
+          description: |-
+            `disabled` means `PUBLISH_ENABLED=false` — a deliberate mode that does
+            not count against health. `disconnected` does.
+      required: [status, database, nats]
+
+    Livez:
+      type: object
+      description: What `GET /livez` reports. Static by design.
+      properties:
+        status:
+          type: string
+          enum: [alive]
+      required: [status]
+
+    Environment:
+      type: object
+      description: |-
+        One environment. Its `id` is what token scopes, KV key prefixes and every
+        other domain's `environmentId` refer to.
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+          description: Assigned by the database.
+        name:
+          type: string
+          maxLength: 100
+          description: |-
+            Trimmed, non-empty, at most 100 characters. Note the JSON name — the Go
+            field and the column are both `ENVIRONMENT`.
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Set to the database's `CURRENT_TIMESTAMP` on every write.
+      example:
+        id: 1
+        name: dev
+        updatedAt: '2026-08-05T23:27:56Z'
+
+    Microservice:
+      type: object
+      description: |-
+        One microservice. It belongs to no environment — its appsettings and bundles
+        do.
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+          description: Assigned by the database.
+        name:
+          type: string
+          maxLength: 100
+          description: Trimmed, non-empty, at most 100 characters.
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+      example:
+        id: 1
+        name: catalog-api
+        updatedAt: '2026-08-05T23:27:56Z'
+
+    Flag:
+      type: object
+      description: A flag definition. It carries no environment; its values do.
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        flagKey:
+          type: string
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: |-
+            Letters, digits, dash and underscore only. **No dots**: the `FLAGS` KV
+            key is `{environmentId}.{flagKey}`, so a dot would make the key
+            ambiguous to a consumer splitting on the separator.
+        isActive:
+          type: integer
+          format: int64
+          description: |-
+            An integer, mirroring the column, on the same terms as `enabled` on a
+            flag value. Stored as sent and read back; nothing in the write or
+            publish path branches on it today.
+
+            Omit it from a create and it is bound as `0`, **not** the column's
+            `DEFAULT 1` — the insert always binds the decoded field, so the Go
+            zero value wins over the default.
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+      example:
+        id: 7
+        flagKey: search_v2
+        isActive: 1
+        updatedAt: '2026-08-05T23:27:56Z'
+
+    FlagValue:
+      type: object
+      description: |-
+        One flag's value in one environment. This is the request body for both
+        `POST /flags/values` and `PUT /flags/values`, and the response for those two
+        and for `GET /flags/values/{id}` — the listing returns `FlagValueRow`
+        instead, which adds `flagKey`.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: |-
+            Assigned by the database on create, and **required in the body on
+            `PUT`** — that route has no `{id}` in its path.
+        environmentId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |-
+            Required on create, where it is also what the token scope is checked
+            against. Ignored on update: a flag value cannot be moved between
+            environments, and the row's real environment is read from the database
+            rather than taken from the body.
+        flagId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Required on create, ignored on update.
+        value:
+          type: string
+          description: |-
+            Free-form, and published to KV verbatim. Used for things a boolean
+            cannot carry — a rollout percentage, a variant name. Parse it in the
+            consumer.
+        enabled:
+          type: integer
+          format: int64
+          description: |-
+            **An integer here and a boolean in KV.** The API mirrors the
+            `NUMBER`/`INTEGER` column; KV mirrors what a consumer wants to branch on.
+            The conversion is `enabled != 0`, done once on the publish path, so any
+            non-zero value is on.
+
+            A tool that reads a flag value from this API and writes it back
+            unchanged is fine. A tool that reads `{"enabled": true}` from KV and
+            posts what it found is not — see the README's
+            [int/bool trap](../README.md#the-intbool-trap).
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+        expectedUpdatedAt:
+          type: string
+          format: date-time
+          writeOnly: true
+          description: |-
+            Optimistic concurrency, opt-in. Send the `updatedAt` you read and the
+            update applies only while the stored row still carries it; otherwise the
+            request answers **409** and changes nothing. Omit it and the original
+            last-write-wins behaviour stands.
+
+            It never appears in a response — the row is read back from the database,
+            which has no such column.
+      example:
+        id: 101
+        environmentId: 1
+        flagId: 8
+        value: 'on'
+        enabled: 1
+        updatedAt: '2026-08-05T23:29:01Z'
+
+    FlagValueRow:
+      type: object
+      description: |-
+        A flag value with its flag's key already resolved. Only `GET /flags/values`
+        returns this shape: without `flagKey` a list caller cannot tell which flag a
+        row belongs to without a second request per row.
+      properties:
+        id:
+          type: integer
+          format: int64
+        environmentId:
+          type: integer
+          format: int64
+        flagId:
+          type: integer
+          format: int64
+        flagKey:
+          type: string
+          description: Joined in from the flag definition. Not stored on the value row.
+        value:
+          type: string
+        enabled:
+          type: integer
+          format: int64
+          description: An integer, on the same terms as `FlagValue.enabled`.
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, environmentId, flagId, flagKey, value, enabled, updatedAt]
+
+    MicroserviceAppSettings:
+      type: object
+      description: |-
+        One microservice's appsettings tree in one environment. The same concept is
+        *appsettings* in prose, `MICROCONFIG` in KV and `SETTINGS_JSON` in the
+        database.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: |-
+            Assigned by the database on create, and **required in the body on
+            `PUT`** — that route has no `{id}` in its path.
+        microserviceId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |-
+            Required on both create and update. An update rewrites it, so it can
+            move the row — and therefore its KV key.
+        environmentId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |-
+            Required on both create and update. On create it is what the token
+            scope is checked against; on update the row's current environment is
+            read from the database and *both* it and this one must be in scope,
+            since the write touches the environment it leaves and the one it enters.
+        settingsJson:
+          type: object
+          additionalProperties: true
+          description: |-
+            The entire tree as one JSON document, published to KV verbatim so one
+            push replaces it atomically and a consumer can never observe half an
+            update. Its shape belongs to the consuming service; the control plane
+            treats it as opaque.
+
+            It **must be a JSON object**. A top-level array or scalar is well-formed
+            JSON that would break every consumer's deserialization at once, so it is
+            refused with 400. So is anything over **512 KiB**, the same ceiling the
+            KV buckets are provisioned with — checked before the database write, so
+            a tree can never be accepted with a 201 and then rejected by JetStream
+            on every publish attempt forever after.
+
+            **No secrets.** Anyone with NATS credentials can read every key and every
+            consumer holds it in plaintext memory. The convention is a marker —
+            `"accessKeyId": "env:STORAGE_ACCESS_KEY_ID"` — that the consumer resolves
+            at bind time from its own secret store.
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+        expectedUpdatedAt:
+          type: string
+          format: date-time
+          writeOnly: true
+          description: |-
+            Optimistic concurrency, opt-in, on the same terms as
+            `FlagValue.expectedUpdatedAt`: a mismatch answers 409 and changes
+            nothing.
+      example:
+        id: 203
+        microserviceId: 2
+        environmentId: 2
+        settingsJson:
+          http:
+            timeoutMs: 1500
+        updatedAt: '2026-08-05T23:27:56Z'
+
+    Localization:
+      type: object
+      description: |-
+        One translation bundle for a (microservice, environment, locale) tuple. The
+        whole locale is one document so an application loads it atomically and KV
+        holds one entry per locale.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: |-
+            Assigned by the database on create, and **required in the body on
+            `PUT /localization/values`** — that route has no `{id}` in its path.
+        microserviceId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Required on both create and update; an update rewrites it.
+        environmentId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |-
+            Required on both create and update, and checked against the token scope
+            the same way an appsettings row's is.
+        locale:
+          type: string
+          maxLength: 35
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: |-
+            Letters, digits, dash and underscore only. **No dots**: the
+            `LOCALIZATION` key is `{environmentId}.{microserviceId}.{locale}`, so a
+            dot inside it would produce a key no consumer can parse back into its
+            three parts. Validated on update as well as create.
+        bundleJson:
+          type: object
+          additionalProperties: true
+          description: |-
+            One flat JSON object per locale — `{"catalog.title": "Catálogo"}`. Like
+            `settingsJson` it must be an object and must not exceed **512 KiB**;
+            because bundles are per locale rather than per service, that ceiling is
+            usually the constraint that saves you.
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+        expectedUpdatedAt:
+          type: string
+          format: date-time
+          writeOnly: true
+          description: |-
+            Optimistic concurrency, opt-in, on the same terms as
+            `FlagValue.expectedUpdatedAt`: a mismatch answers 409 and changes
+            nothing.
+      example:
+        id: 302
+        microserviceId: 1
+        environmentId: 2
+        locale: en-US
+        bundleJson:
+          catalog.title: Catalog
+        updatedAt: '2026-08-05T23:27:56Z'
+
+    Inventory:
+      type: object
+      description: |-
+        The three domains' editable rows, each paged independently by the same
+        `limit` and `offset`. All three keys are always present; a collection with
+        no rows on this page is `null` rather than an empty array.
+      properties:
+        flags:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/InventoryFlag'
+        microConfigs:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/InventoryMicro'
+        localization:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/InventoryLoc'
+      required: [flags, microConfigs, localization]
+
+    InventoryFlag:
+      type: object
+      description: A flag value as the inventory reports it — the update target and enough to recognise it.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The flag-value row id, which is what `PUT /flags/values` takes in its body.
+        environmentId:
+          type: integer
+          format: int64
+        flagKey:
+          type: string
+        enabled:
+          type: integer
+          format: int64
+          description: An integer here too, like everywhere else on this API.
+        value:
+          type: string
+      required: [id, environmentId, flagKey, enabled, value]
+
+    InventoryMicro:
+      type: object
+      description: An appsettings row as the inventory reports it.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The appsettings row id — not the microservice id.
+        microserviceId:
+          type: integer
+          format: int64
+        environmentId:
+          type: integer
+          format: int64
+        settingsJson:
+          type: object
+          additionalProperties: true
+      required: [id, microserviceId, environmentId, settingsJson]
+
+    InventoryLoc:
+      type: object
+      description: A bundle as the inventory reports it.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The localization row id.
+        microserviceId:
+          type: integer
+          format: int64
+        environmentId:
+          type: integer
+          format: int64
+        locale:
+          type: string
+        bundleJson:
+          type: object
+          additionalProperties: true
+      required: [id, microserviceId, environmentId, locale, bundleJson]
+
+    AuditEntry:
+      type: object
+      description: |-
+        One recorded mutation. `domain`, `targetId`, `environmentId`, `remoteAddr`
+        and `requestBody` are best effort — the middleware fills them from whatever
+        the route makes knowable, and a request that never reached a route carries
+        only the envelope. Absent fields are omitted rather than sent null.
+      properties:
+        id:
+          type: integer
+          format: int64
+        occurredAt:
+          type: string
+          format: date-time
+          description: When the record was written, which is after the change was committed.
+        actor:
+          type: string
+          description: |-
+            The credential's configured name, never the secret. `shared` is the
+            single `ADMIN_TOKEN`; empty when authentication is disabled.
+        method:
+          type: string
+          description: The HTTP method. Only mutating ones are recorded.
+          examples: [PUT]
+        path:
+          type: string
+          maxLength: 400
+          description: The request path, truncated to the column's width.
+        domain:
+          type: string
+          description: |-
+            Which domain the write was aimed at, as the route declared it —
+            `flagvalues`, `microconfig`, `localization`, `flags`, `environments`,
+            `microservices`.
+        targetId:
+          type: string
+          description: |-
+            The row id the write addressed, from the path or — on the `PUT` routes —
+            from the body. A string because it comes from the request as text.
+        environmentId:
+          type: integer
+          format: int64
+          description: |-
+            The environment the write resolved to, when exactly one was determined.
+            A row without it is invisible to a scoped reader.
+        statusCode:
+          type: integer
+          format: int32
+          description: |-
+            What the caller actually got, including the 401s and 403s — which is the
+            trail that shows someone probing with the wrong credential.
+        remoteAddr:
+          type: string
+          description: The peer host, without the port.
+        requestBody:
+          type: string
+          description: |-
+            The request body after redaction, as a JSON **string** rather than a
+            nested document. Secret-shaped field names are replaced with
+            `[redacted]` at any depth, a non-JSON body becomes
+            `[non-JSON body omitted]`, and anything longer than the column allows is
+            cut and marked `...[truncated]`.
+      required: [id, occurredAt, actor, method, path, statusCode]
+      example:
+        id: 918
+        occurredAt: '2026-08-05T23:29:01Z'
+        actor: ci-dev
+        method: PUT
+        path: /flags/values
+        domain: flagvalues
+        targetId: '101'
+        environmentId: 1
+        statusCode: 200
+        remoteAddr: 10.4.1.22
+        requestBody: '{"enabled":1,"id":101,"value":"on"}'

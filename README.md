@@ -462,6 +462,7 @@ deploying it.
 |---|---|
 | [`deploy/compose/README.md`](deploy/compose/README.md) | the local stack: seeded data, what to try, and a Docker-free two-terminal setup |
 | [`docs/CONSUMER_CONTRACT.md`](docs/CONSUMER_CONTRACT.md) | the consumer contract — what to watch, value shapes, caching semantics, in any language |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | the admin API as OpenAPI 3.1 — every route above, the schema each carries, and which failure answers with what |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | auth model, token scoping, secret handling, threat notes |
 | [`docs/DEPLOY_JETSTREAM_K8S.md`](docs/DEPLOY_JETSTREAM_K8S.md) | deploying NATS JetStream and this service on Kubernetes |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | ECS log shape, metrics, what to alert on |

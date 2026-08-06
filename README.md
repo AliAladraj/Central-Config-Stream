@@ -468,6 +468,7 @@ deploying it.
 | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) | current gaps, honestly listed |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to build, test and lint, and the ~45 sites a new config domain touches |
 | [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and what is in scope |
+| [`CHANGELOG.md`](CHANGELOG.md) | what each release changed, written as capability rather than commit history |
 
 Oracle DDL for every table is in [`migrations/`](migrations/).
 

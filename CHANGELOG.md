@@ -110,20 +110,42 @@ ran. It is described below as the shipped behaviour rather than as a repair.
   `centralconfig_reconcile_last_success_timestamp_seconds` is the one to watch
   on a first deployment.
 
-- **A bounded database session pool** (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`,
-  `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`), CLOB columns bound as CLOBs
-  rather than as strings, a timezone-safe reconcile window, and
-  unique-constraint violations mapped to `409` instead of `500`. **The Oracle
-  paths are compile-verified only** — every test in this repository runs against
-  the SQLite backend, so none of the four has ever executed against a real
-  driver. See [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
-  §3.1.
+- **PostgreSQL as the source of truth**, through `jackc/pgx/v5` driven by
+  `database/sql`. `DB_DRIVER=postgres` is the default and `CONN_STRING` takes a
+  Postgres DSN; `DB_DRIVER=sqlite` still selects the local test stack. The
+  driver is pure Go, so `CGO_ENABLED=0` static builds and the four-platform
+  cross-compile are unaffected. Two type choices are load-bearing rather than
+  incidental: the JSON documents live in `TEXT` columns and bind as plain Go
+  strings — deliberately **not** `jsonb`, which re-emits with its own key order
+  and would defeat the publisher's byte-identical skip, republishing every tree
+  to the whole fleet on every sweep — and `UPDATED_AT` is `TIMESTAMPTZ`, which
+  makes the incremental reconcile window a plain instant comparison and removes
+  a class of timezone bug rather than an instance of one. Also a bounded
+  connection pool (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`,
+  `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`), which matters more against
+  Postgres because every connection there is a backend process, and
+  unique-constraint violations (SQLSTATE `23505`) mapped to `409` instead of
+  `500`.
+
+- **The production storage path is covered by tests.**
+  `internal/pgintegration` runs the real repositories and the audit store
+  against a live PostgreSQL — 25 tests, each in a fresh schema it creates,
+  migrates from `migrations/*.sql` and seeds itself, so applying the shipped DDL
+  is exercised several dozen times on every run. The reconcile window is pinned
+  on sessions at UTC+14 and UTC−11 as well as UTC, because those are the two
+  signs the timezone bug came in and a UTC-only runner would miss both. Large
+  documents are asserted to round-trip byte-identically, which is what the
+  publish skip depends on. The suite skips cleanly when `TEST_POSTGRES_DSN` is
+  unset, so `go test ./...` stays green without a database; `make test-postgres`
+  starts a throwaway one. What it does not reach is anything above the
+  repository layer — `internal/app` still tests on SQLite alone
+  ([`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.1).
 
 - **A local stack that exercises the whole path on one machine.** A compose
   file, a distroless multi-stage image (non-root, one target per binary) and
   Kubernetes manifests, plus `DB_DRIVER=sqlite` and an embedded JetStream server
-  so the write → database → KV → consumer path runs with no Oracle and no NATS
-  installation.
+  so the write → database → KV → consumer path runs with no PostgreSQL and no
+  NATS installation.
 
 - **A React console that plays a consuming microservice.** Seven views over a
   live `configclient` cache, an environment switcher, SSE push of every KV
@@ -151,7 +173,10 @@ ran. It is described below as the shipped behaviour rather than as a repair.
 - **A CI gate** on `gofmt`, build, vet, race tests, module tidiness,
   `golangci-lint` and the web UI's lint, test and build — deliberately one job,
   so a contributor sees a single tick rather than six to correlate. It stands up
-  no database: the Oracle path is the one path no gate exercises
+  a `postgres:17-alpine` service container so the integration suite above runs
+  there rather than skipping, and because that suite fails *open* by design, the
+  workflow re-runs it verbosely and fails the step if any test skipped. A DSN
+  typo would otherwise leave the gate green while testing nothing
   ([`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.6).
 
 - **Documentation for each audience**: a compose walkthrough, a consumer
@@ -236,18 +261,21 @@ Listed here because a first release is exactly where they are easiest to miss;
 [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3 gives each one
 a cost and a fix.
 
-- **The Oracle repositories have never run against Oracle.** The SQL is
-  compile-verified; every test runs against SQLite, whose bind syntax,
-  pagination clause and type handling all differ. Treat the first deployment
-  against a real instance as the test.
-- **There is no migration runner, and the migration files are not in dependency
-  order.** `001` has foreign keys into tables created by `002` and `003`, so a
-  fresh database needs 002 and 003 applied first. Nothing records what has been
-  applied, and there is no down path.
-- **The schema is defined twice** — once as Oracle DDL in `migrations/`, once by
-  hand in `internal/database/sqlite.go` — and kept in step by nothing but
-  attention. Because every test runs on SQLite, a divergence shows up as a green
-  build, which is the expensive kind.
+- **PostgreSQL has never run a deployment.** The repositories and the audit
+  store are exercised against a real server on every CI run, which is a great
+  deal more than compilation, but no production instance has yet carried this
+  schema — and the coverage stops at the repository layer, so the end-to-end and
+  handler tests still run on SQLite alone. Treat the first deployment as the
+  remaining test.
+- **There is no migration runner.** `migrations/*.sql` is DDL you apply
+  yourself. The file numbers *are* the apply order, so the directory in lexical
+  order is correct on an empty database, but nothing records what has been
+  applied and there is no down path.
+- **The schema is defined twice** — once as PostgreSQL DDL in `migrations/`,
+  once by hand in `internal/database/sqlite.go` — and kept in step by nothing
+  but attention. A missing table is caught now that the integration suite
+  applies the migrations; a column that merely *differs* is not, and shows up as
+  a green build against a schema production does not have.
 - **The dual write is not transactional.** A crash between the database commit
   and the KV write leaves KV stale until the next reconcile. This is a decision,
   not an oversight: the reconciler bounds the exposure to one

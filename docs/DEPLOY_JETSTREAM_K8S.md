@@ -2,7 +2,7 @@
 
 This guide stands up a production-shaped NATS JetStream cluster on Kubernetes and
 deploys `central-config` against it. JetStream KV is the distribution layer;
-Oracle stays the source of truth.
+PostgreSQL stays the source of truth.
 
 Sections:
 1. Prerequisites
@@ -162,11 +162,25 @@ CA into clients. For local/dev you can skip creds and TLS entirely.
 
 ## 5. Deploy central-config
 
-Create the secrets it needs:
+**Apply the schema first.** There is no migration runner: `migrations/*.sql` is
+DDL you apply yourself, with `psql` or with whatever migration tool you already
+run. The file numbers are the apply order, so the directory in lexical order is
+correct on an empty database:
+
+```bash
+for f in migrations/*.sql; do psql "$CONN_STRING" -v ON_ERROR_STOP=1 -f "$f"; done
+```
+
+Nothing records what has been applied and there is no down path, so a partial or
+repeated application is yours to notice. The service does not create or verify
+its own tables — it will start happily against an empty database and fail every
+request.
+
+Then create the secrets it needs:
 
 ```bash
 kubectl -n central-config create secret generic central-config-secrets \
-  --from-literal=CONN_STRING='oracle://user:pass@oracle-host:1521/svc' \
+  --from-literal=CONN_STRING='postgres://user:pass@postgres-host:5432/central_config?sslmode=require' \
   --from-literal=ADMIN_TOKEN='<a-long-random-token>'
 ```
 
@@ -177,7 +191,7 @@ credential per person or pipeline:
 
 ```bash
 kubectl -n central-config create secret generic central-config-secrets \
-  --from-literal=CONN_STRING='oracle://user:pass@oracle-host:1521/svc' \
+  --from-literal=CONN_STRING='postgres://user:pass@postgres-host:5432/central_config?sslmode=require' \
   --from-literal=ADMIN_TOKENS='alice:*:<secret>,ci-dev:1|2:<secret>,release:3:<secret>'
 ```
 
@@ -201,16 +215,17 @@ Key env the manifest sets:
 | `NATS_CREDS` | `/etc/nats/nats.creds` | mounted from `nats-creds` secret |
 | `PUBLISH_ENABLED` | `true` | write-through to KV + run reconciler |
 | `NATS_REPLICAS` | `3` | KV buckets created with quorum |
-| `RECONCILE_INTERVAL` | `5m` | Oracle→KV drift heal cadence |
+| `RECONCILE_INTERVAL` | `5m` | database→KV drift heal cadence |
 | `ADMIN_TOKEN` | from secret | bearer token — required on every route except `/health`, `/livez` and `/metrics` |
 
 Worth setting explicitly for a real deployment, though the manifest leaves them
 at their defaults: `RECONCILE_PRUNE_MAX_FRACTION` (default `0.2`) and the
 connection-pool bounds `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`,
 `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`. The pool defaults (20/5/30m/5m)
-are per replica, so multiply by `replicas` before comparing them against what
-your Oracle instance will tolerate — this service is usually not the only thing
-on that database.
+are per replica, so multiply by `replicas` before comparing them against your
+PostgreSQL `max_connections` — this service is usually not the only thing on
+that instance, and every connection there is a backend process rather than a
+thread.
 
 ### Probes
 
@@ -223,7 +238,7 @@ The manifest points **liveness at `GET /livez`** and **readiness at
   when either is down.
 
 Pointing liveness at `/health` — the intuitive thing to do, since it is the
-endpoint that knows the most — turns a NATS or Oracle outage into a crash loop
+endpoint that knows the most — turns a NATS or database outage into a crash loop
 across every replica. That takes the admin API's *read* paths down with it, at
 exactly the moment an operator wants to look at configuration or turn a flag
 off. A dependency outage should cost you traffic, not your pods.
@@ -240,7 +255,7 @@ off. A dependency outage should cost you traffic, not your pods.
 Two consequences worth knowing:
 
 - **NATS being unreachable at startup is not fatal.** The service boots, serves
-  reads from Oracle, publishes nothing, and sets `centralconfig_nats_up` to `0`;
+  reads from PostgreSQL, publishes nothing, and sets `centralconfig_nats_up` to `0`;
   the reconciler re-provisions the buckets on its next cycle. The same call runs
   every cycle, so a NATS restart with an empty store heals itself rather than
   leaving every publish failing until the pods are restarted.
@@ -323,9 +338,10 @@ contract is specified in [`CONSUMER_CONTRACT.md`](CONSUMER_CONTRACT.md).
 - **JetStream monitoring:** `nats server report jetstream`, and scrape the NATS
   Prometheus exporter (enable `exporter` in the Helm values) for stream/consumer
   and storage metrics.
-- **Backups:** Oracle is the system of record — standard Oracle backups cover
-  correctness. KV can always be rebuilt by the reconciler. Optionally snapshot
-  streams with `nats stream backup`.
+- **Backups:** PostgreSQL is the system of record — whatever you already run,
+  `pg_dump` or continuous archiving, covers correctness. KV can always be
+  rebuilt by the reconciler. Optionally snapshot streams with
+  `nats stream backup`.
 
 ---
 
@@ -333,7 +349,7 @@ contract is specified in [`CONSUMER_CONTRACT.md`](CONSUMER_CONTRACT.md).
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `/health` returns 503, pods stay up | NATS unreachable / creds wrong / Oracle unreachable | check `NATS_URL`, creds secret, cluster pods, `CONN_STRING`. Pods staying up is correct — reads still work |
+| `/health` returns 503, pods stay up | NATS unreachable / creds wrong / PostgreSQL unreachable | check `NATS_URL`, creds secret, cluster pods, `CONN_STRING`. Pods staying up is correct — reads still work |
 | Buckets not created | JetStream disabled or no write perms | verify `jetstream.enabled: true`; check writer perms on `$JS.API.>`. The reconciler retries every cycle, so fix it and wait rather than restarting |
 | Consumer sees no values | wrong `EnvironmentID` / subject perms too narrow | confirm the ids against `GET /inventory`; check the consumer's subjects against §4 — a per-service credential that is one id off subscribes to nothing and reports no error |
 | Every API call returns 401 | no token, or a token the deployment does not know | reads need one too; check `ADMIN_TOKEN`/`ADMIN_TOKENS` and that the client sends `Authorization: Bearer …` |

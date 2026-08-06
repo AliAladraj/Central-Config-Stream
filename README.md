@@ -31,8 +31,8 @@ API to each service directly means the admin API has to know who is running.
 
 The split here is:
 
-- **Control plane** — this service. An HTTP admin API backed by Oracle. Admins
-  write here. Consumers never call it.
+- **Control plane** — this service. An HTTP admin API backed by PostgreSQL.
+  Admins write here. Consumers never call it.
 - **Data plane** — NATS JetStream KV. Consumers watch it and serve every read
   from an in-memory cache.
 
@@ -44,16 +44,18 @@ known good rather than erroring.
 
 | what | version | why |
 |---|---|---|
-| **Oracle** | any supported release | The source of truth in a deployed setup. The only production driver — `DB_DRIVER=oracle` is the default, and DDL for every table is in [`migrations/`](migrations/). |
+| **PostgreSQL** | any supported release; CI runs 17 | The source of truth in a deployed setup. The only production driver — `DB_DRIVER=postgres` is the default, and DDL for every table is in [`migrations/`](migrations/). |
 | **NATS 2.10+ with JetStream enabled** | 2.10+ | The distribution plane. KV buckets are a JetStream feature; a server without `--jetstream` cannot run this. |
 | **Go 1.26+** | see [`go.mod`](go.mod) (`go 1.26`) | To build the service, the console and `pkg/configclient`. |
 | **Node 20+** | see [`webui/package.json`](webui/package.json) | Only to build the React console. The service itself needs no Node. |
 
 **SQLite is the local test stack only.** `DB_DRIVER=sqlite` swaps in a parallel
 set of repositories so the JetStream path can be exercised on a laptop without
-an Oracle instance. The schema is the same shape and the SQL differs only in
-bind-parameter syntax, but running that stack does not exercise the Oracle
-repositories at all — see [Known limitations](#known-limitations).
+a PostgreSQL instance. The schema is the same shape and the SQL differs only in
+bind-parameter syntax, but running that stack does not exercise the PostgreSQL
+repositories at all — those are covered by their own suite,
+`internal/pgintegration`, which CI runs against a real server. See
+[Known limitations](#known-limitations).
 
 ## Quickstart
 
@@ -98,9 +100,9 @@ curl -s -X PUT http://localhost:8080/flags/values \
 {"id":101,"environmentId":1,"flagId":8,"value":"on","enabled":1,"updatedAt":"2026-08-05T23:29:01Z"}
 ```
 
-That request wrote Oracle (SQLite here), published KV key `FLAGS/1.dark_mode`,
-and pushed it to every watching consumer. The console's own consumer has it
-already:
+That request wrote the database (SQLite here), published KV key
+`FLAGS/1.dark_mode`, and pushed it to every watching consumer. The console's own
+consumer has it already:
 
 ```bash
 curl -s http://localhost:8090/api/state | jq '.flags.dark_mode'
@@ -204,10 +206,10 @@ flowchart LR
         rec[reconciler]
     end
 
-    cc -->|1. write, source of truth| ora[(Oracle)]
+    cc -->|1. write, source of truth| pg[(PostgreSQL)]
     cc -->|2. write-through| kv[(JetStream KV<br/>FLAGS · MICROCONFIG · LOCALIZATION)]
     rec -.->|periodic resync, heals drift| kv
-    ora -.-> rec
+    pg -.-> rec
     kv -->|watch| s1[Service A<br/>in-memory cache]
     kv -->|watch| s2[Service B<br/>in-memory cache]
     kv -->|watch| s3[Service C<br/>in-memory cache]
@@ -216,9 +218,9 @@ flowchart LR
 The reconciler is not a separate deployable — it runs in-process, started by the
 same binary when `PUBLISH_ENABLED=true`.
 
-The dual write is not transactional. Oracle is written first and the KV write
-follows; a KV failure is logged and does not fail the admin request. The
-reconciler sweeps Oracle against KV on `RECONCILE_INTERVAL` and republishes
+The dual write is not transactional. PostgreSQL is written first and the KV
+write follows; a KV failure is logged and does not fail the admin request. The
+reconciler sweeps the database against KV on `RECONCILE_INTERVAL` and republishes
 anything missing or stale, so drift is bounded by that interval rather than
 permanent. See [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
 §3.2 for what that costs and what a transactional outbox would buy.
@@ -377,7 +379,7 @@ Every `PUT` accepts an optional `expectedUpdatedAt`. The write applies only
 while the stored row still carries that timestamp; otherwise it answers **409**
 and changes nothing. Absent, the original last-write-wins behaviour stands. It
 is implemented and tested in all three domains — flag values, appsettings and
-bundles — against both the Oracle and SQLite repositories.
+bundles — against both the PostgreSQL and SQLite repositories.
 
 ```bash
 # read the row, keep its updatedAt
@@ -396,7 +398,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT http://localhost:8080/flags/valu
 ### The int/bool trap
 
 `enabled` is an **integer** on the admin API and a **boolean** in KV. Same
-concept, two types, because the API mirrors the `NUMBER`/`INTEGER` column and KV
+concept, two types, because the API mirrors the `SMALLINT` column and KV
 mirrors what a consumer wants to branch on:
 
 | plane | shape |
@@ -466,8 +468,8 @@ Beyond the obvious `DB_DRIVER` / `CONN_STRING` / `NATS_URL` / `PUBLISH_ENABLED`:
 
 | variable | what it bounds |
 |---|---|
-| `DB_MAX_OPEN_CONNS` `[20]`, `DB_MAX_IDLE_CONNS` `[5]` | Oracle sessions this process may hold. Left unbounded, a slow query plus replicas plus the reconciler can exhaust a shared instance. Not applied to SQLite, which runs on one connection. |
-| `DB_CONN_MAX_LIFETIME` `[30m]`, `DB_CONN_MAX_IDLE_TIME` `[5m]` | How long a session lives and how long an idle one is kept. Without a lifetime, a session survives a failover as a half-dead connection. |
+| `DB_MAX_OPEN_CONNS` `[20]`, `DB_MAX_IDLE_CONNS` `[5]` | PostgreSQL connections this process may hold. Left unbounded, a slow query plus replicas plus the reconciler can walk a shared instance into `max_connections` — and every Postgres connection is a backend process, so the cost lands on everything else on that instance before the refusals start. Not applied to SQLite, which runs on one connection. |
+| `DB_CONN_MAX_LIFETIME` `[30m]`, `DB_CONN_MAX_IDLE_TIME` `[5m]` | How long a connection lives and how long an idle one is kept. Without a lifetime, a connection survives a failover or a pgbouncer restart as a half-dead socket. |
 | `RECONCILE_PRUNE_MAX_FRACTION` `[0.2]` | The share of a KV bucket one reconcile cycle may delete. A database that came back empty would otherwise have the reconciler purge the whole fleet's configuration. |
 | `WRITE_RATE_LIMIT_PER_MINUTE` `[120]` | Writes per caller per minute; `<= 0` disables it. |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | Both set ⇒ HTTPS with a TLS 1.3 floor and HSTS. Otherwise plain HTTP with a startup warning. |
@@ -503,17 +505,28 @@ deploying it.
 | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | what taking part here asks of everyone, and the private channel for reporting a problem |
 | [`CHANGELOG.md`](CHANGELOG.md) | what each release changed, written as capability rather than commit history |
 
-Oracle DDL for every table is in [`migrations/`](migrations/).
+PostgreSQL DDL for every table is in [`migrations/`](migrations/), numbered in
+the order it applies.
 
 ## Known limitations
 
-- **The dual write is not transactional.** A crash between the Oracle commit and
-  the KV write leaves KV stale until the next reconcile. Bounded by
+- **The dual write is not transactional.** A crash between the database commit
+  and the KV write leaves KV stale until the next reconcile. Bounded by
   `RECONCILE_INTERVAL`, not eliminated. A transactional outbox would close it
   and is deliberately not built — see
   [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.2.
-- **No repository-layer tests against Oracle.** The Oracle SQL is exercised only
-  by compilation; the end-to-end tests run against SQLite.
+- **PostgreSQL is newly adopted and has never run a deployment.** The SQL is
+  exercised by `internal/pgintegration` against a real server on every CI run,
+  which is a great deal more than compilation, but no production instance has
+  yet carried this schema. Treat the first deployment accordingly.
+- **There is no migration runner.** `migrations/` is DDL you apply yourself;
+  nothing records what has been applied and there is no down path. The file
+  numbers are the apply order, so `psql -f` over the directory in lexical order
+  works — see [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
+  §3.4.
+- **Only the repository layer is covered against PostgreSQL.** The end-to-end
+  and handler tests still run on SQLite alone, so the wiring above the
+  repositories is verified against the mirror schema rather than the real one.
 - **KV has no per-key ACLs out of the box.** With a single shared credential,
   any consumer holding it can read every environment's keys. The environment
   prefix is a scoping convention for watches, not an access control boundary.

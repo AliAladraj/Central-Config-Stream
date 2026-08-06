@@ -1,6 +1,6 @@
 # Local test stack: NATS JetStream + central-config (SQLite backend) + a
-# consumer console UI. Oracle is NOT used here — DB_DRIVER=sqlite swaps in the
-# test repositories so the JetStream distribution path can be exercised
+# consumer console UI. PostgreSQL is NOT used here — DB_DRIVER=sqlite swaps in
+# the test repositories so the JetStream distribution path can be exercised
 # end-to-end on a laptop.
 #
 #   docker compose -f deploy/compose/docker-compose.yml up --build

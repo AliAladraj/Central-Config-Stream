@@ -98,8 +98,8 @@ Two things the release does **not** contain, both on purpose:
 - **A linux/arm64 image.** The Dockerfile compiles in-image without a
   `$BUILDPLATFORM`/`$TARGETARCH` split, so an arm64 image would mean running the
   whole Go build under QEMU on every release. The arm64 *binaries* are real
-  cross-compiles — `CGO_ENABLED=0` throughout, because the Oracle driver and
-  SQLite are both pure Go.
+  cross-compiles — `CGO_ENABLED=0` throughout, because the Postgres driver
+  (`jackc/pgx/v5`) and SQLite are both pure Go.
 
 ---
 

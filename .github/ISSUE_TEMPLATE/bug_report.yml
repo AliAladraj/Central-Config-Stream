@@ -2,8 +2,8 @@
 # admin write, the write-through to KV, the reconcile sweep and the consumer's
 # cache are four places a value can be wrong in different ways. The fields below
 # are the ones that say which of the four you are looking at — the commit,
-# because a fix is written against one; the driver, because Oracle SQL is never
-# exercised by tests; the JetStream answer, because a server without it cannot
+# because a fix is written against one; the driver, because the two backends are
+# covered by different suites; the JetStream answer, because a server without it cannot
 # distribute anything; and where the value stopped, because the dual write is
 # not transactional and that is the most common shape of a real report.
 name: Bug report
@@ -64,11 +64,12 @@ body:
     attributes:
       label: DB_DRIVER
       description: >-
-        The Oracle repositories are exercised only by compilation — every test runs against SQLite —
-        so which driver you are on decides how much is already known to work.
+        The two backends are covered by different suites: the PostgreSQL repositories by
+        internal/pgintegration against a real server, everything above them by tests that run on
+        SQLite. Which driver you are on decides which of the two a report lands in.
       options:
         - sqlite (the local test stack)
-        - oracle
+        - postgres
     validations:
       required: true
 

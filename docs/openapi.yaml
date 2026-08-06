@@ -1724,7 +1724,7 @@ components:
           format: int64
           description: |-
             **An integer here and a boolean in KV.** The API mirrors the
-            `NUMBER`/`INTEGER` column; KV mirrors what a consumer wants to branch on.
+            `SMALLINT` column; KV mirrors what a consumer wants to branch on.
             The conversion is `enabled != 0`, done once on the publish path, so any
             non-zero value is on.
 

@@ -21,7 +21,23 @@ CONSOLE_BIN := testconsole
 COMPOSE_FILE := deploy/compose/docker-compose.yml
 COVERAGE := coverage.out
 
-.PHONY: help build test cover lint fmt ui run console stack clean
+# Build identity, stamped into both binaries by `build` so a running process can
+# say what it is. VERSION, COMMIT and DATE are all overridable — `make build
+# VERSION=v1.2.3` — because a release pipeline knows the version it is cutting
+# better than git does, and a build from a tarball has no git at all, which is
+# what the `|| echo` fallbacks are for.
+#
+# They stay recursively expanded (`?=` and `=`, never `:=`) so git and date run
+# only for the targets that use them, not on every `make help`.
+MODULE := github.com/ErasedKyte/Central-Config-Stream
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS = -X $(MODULE)/internal/buildinfo.Version=$(VERSION) \
+          -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) \
+          -X $(MODULE)/internal/buildinfo.Date=$(DATE)
+
+.PHONY: help build version test cover lint fmt ui run console stack clean
 
 help: ## List the available targets
 	@echo "central-config — make targets"
@@ -32,8 +48,15 @@ help: ## List the available targets
 
 build: ## Compile every package, then the service and console binaries
 	go build ./...
-	go build -o $(SERVICE_BIN) ./cmd/central-config
-	go build -o $(CONSOLE_BIN) ./cmd/testconsole
+	go build -ldflags "$(LDFLAGS)" -o $(SERVICE_BIN) ./cmd/central-config
+	go build -ldflags "$(LDFLAGS)" -o $(CONSOLE_BIN) ./cmd/testconsole
+
+version: ## Print the build identity `build` stamps into the binaries
+	@echo "version $(VERSION)"
+	@echo "commit  $(COMMIT)"
+	@echo "date    $(DATE)"
+	@echo
+	@echo "Both binaries report it: ./$(SERVICE_BIN) --version"
 
 test: ## Run the Go test suite with the race detector
 	go test -race -count=1 ./...

@@ -37,6 +37,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo"
 	"github.com/ErasedKyte/Central-Config-Stream/pkg/configclient"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -127,9 +128,31 @@ func (h *hub) broadcast(e event) {
 }
 
 func main() {
+	// Answered from the linker's stamp before anything is read or dialled, so
+	// the console can say what it is on a machine where nothing else is
+	// running — the same contract the service keeps.
+	if versionRequested(os.Args[1:]) {
+		fmt.Println("testconsole " + buildinfo.String())
+		return
+	}
 	if err := run(); err != nil {
 		log.Fatalf("testconsole: %v", err)
 	}
+}
+
+// versionRequested reports whether the arguments ask only for the build
+// identity. `version` is what a subcommand habit types and `--version` is what
+// a script writes; the console takes no other argument, since everything it
+// reads comes from the environment.
+func versionRequested(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "version", "-version", "--version":
+		return true
+	}
+	return false
 }
 
 func run() error {

@@ -9,15 +9,26 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/ErasedKyte/Central-Config-Stream/internal/app"
+	"github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo"
 	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
 
 	"github.com/joho/godotenv"
 )
 
 func main() {
+	// The build identity is answered from the linker's stamp alone, before any
+	// configuration is read and before anything is dialled. Asking a binary
+	// what it is has to work on a machine with no database and no NATS —
+	// which is where somebody untangling a rollout usually is.
+	if versionRequested(os.Args[1:]) {
+		fmt.Println("central-config " + buildinfo.String())
+		return
+	}
+
 	// .env is loaded before the logger is configured — it is where LOG_LEVEL
 	// and LOG_FORMAT come from — so its outcome is reported once logging is up.
 	envErr := godotenv.Load()
@@ -43,4 +54,19 @@ func main() {
 		logger.Error("failed to run app", obs.Err(err))
 		os.Exit(1)
 	}
+}
+
+// versionRequested reports whether the arguments ask only for the build
+// identity. Both spellings are accepted because `version` is what a subcommand
+// habit types and `--version` is what a script writes; the binary takes no
+// other argument, so there is nothing here worth a flag parser.
+func versionRequested(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "version", "-version", "--version":
+		return true
+	}
+	return false
 }

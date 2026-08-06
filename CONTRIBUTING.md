@@ -59,6 +59,21 @@ npm run build       # writes ../web
 end-to-end tests, so it needs a free loopback port and takes appreciably longer
 than a unit suite. It does not need Docker.
 
+### Version stamping
+
+`make build` is not quite `go build`: it passes `-ldflags -X` to write the
+version, the short commit and a UTC build date into `internal/buildinfo`, which
+is what `./central-config --version` and `./testconsole --version` print. A
+plain `go build` leaves the defaults — `dev`, `none`, `unknown` — and that is
+fine: it is how a laptop binary tells you what it is. `make version` prints what
+the stamp would be, and `make build VERSION=v1.2.3` overrides it for a release
+pipeline that knows the version it is cutting better than `git describe` does.
+The Dockerfile takes the same three values as build arguments and repeats them
+as OCI image labels.
+
+`--version` is answered before any configuration is read and before the database
+or NATS is dialled, so it works on a machine that has neither.
+
 ### Formatting and linting
 
 `gofmt` is the whole formatting standard — no `goimports` grouping convention

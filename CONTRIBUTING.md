@@ -18,8 +18,8 @@ domain that builds, passes review and quietly never reaches a consumer.
 
 | Tool | Version | Where that comes from |
 |---|---|---|
-| Go | **1.26.2 or newer** | the `go` directive in `go.mod`; the image builds on `golang:1.26-alpine` |
-| Node | **20 or newer** | `engines.node` in `webui/package.json`; the image builds on `node:20-alpine` |
+| Go | **1.26 or newer** | the `go` directive in `go.mod`; the image builds on `golang:1.26-alpine` |
+| Node | **20.19+ or 22.12+** | `engines.node` in `webui/package.json`; the image builds on `node:20-alpine` |
 | Docker | any current version | only for the compose stack — everything else runs without it |
 | `nats` CLI | any current version | optional, for inspecting KV buckets |
 
@@ -33,8 +33,9 @@ itself a problem, and §3.1 of
 
 ## Build, vet, test
 
-There is no `Makefile` and no CI workflow in the repository, so these are run by
-hand and nothing gates a merge. Run all of them before opening a pull request.
+`make help` lists every target, and CI runs the same checks on every pull
+request. Run them locally before opening one — `make build`, `make test` and
+`make lint` cover the Go side, and the commands below are what they invoke.
 
 ```bash
 # Go — from the repository root
@@ -61,8 +62,8 @@ than a unit suite. It does not need Docker.
 ### Formatting and linting
 
 `gofmt` is the whole formatting standard — no `goimports` grouping convention
-beyond what `gofmt` enforces, and no `golangci-lint` configuration in the
-repository. `go vet` is the lint bar for Go. The web UI has an ESLint config at
+beyond what `gofmt` enforces. `go vet` and `golangci-lint` (configured in
+[`.golangci.yml`](.golangci.yml), run by `make lint`) are the lint bar for Go. The web UI has an ESLint config at
 `webui/eslint.config.js`; `npm run lint` must be clean.
 
 Two conventions the tooling cannot check but the codebase holds to:

@@ -1,3 +1,11 @@
+// Command central-config is the control-plane service: an HTTP admin API over
+// the configuration database that also writes every change through to NATS
+// JetStream KV, where consuming microservices watch and cache it.
+//
+// This file is only the entry point. It loads .env, brings up logging, and
+// hands off to internal/app, which does the assembly and owns the server
+// lifecycle. Both failure paths exit non-zero after saying why in the same
+// structured shape as the rest of the service's output.
 package main
 
 import (

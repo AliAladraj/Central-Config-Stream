@@ -1,3 +1,17 @@
+// Package messaging is the distribution plane: the NATS connection, the
+// JetStream KV buckets (FLAGS, MICROCONFIG, LOCALIZATION), the key layout
+// consumers watch, the write-through publisher, and the reconciler.
+//
+// Keys are environment-prefixed — "{envID}.…" — so a consumer can watch one
+// prefix and receive every change relevant to it. keys.go is the authority on
+// that shape; consumers in other languages build the same keys by hand from
+// docs/CONSUMER_CONTRACT.md, so changing it is a contract change.
+//
+// The dual write is not transactional. A publish can fail after the database
+// has committed, which is what the reconciler exists for: it periodically
+// resweeps each domain, republishes what KV is missing or stale, and prunes
+// keys whose rows are gone. A sweep that only partially succeeds neither
+// prunes nor advances its window, so it retries rather than losing ground.
 package messaging
 
 import (

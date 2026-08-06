@@ -1,3 +1,11 @@
+// Package web holds the HTTP request and response plumbing shared by every
+// domain handler: JSON encoding with a uniform error envelope, and decoding
+// that is bounded before it is parsed.
+//
+// The bounds are the reason it is one package rather than a helper per domain.
+// DecodeJSON caps the request body and ParsePage clamps ?limit, so a handler
+// cannot forget either — an unbounded Decode or an unclamped page size is a
+// memory-exhaustion path, and there is no second place to fix it.
 package web
 
 import (

@@ -1,0 +1,131 @@
+# The gate CONTRIBUTING.md describes, run automatically instead of by hand.
+#
+# Deliberately one job. A contributor wants one green tick, not six amber ones
+# to correlate; the whole thing is a few minutes because the Go suite is
+# hermetic — it boots an embedded NATS server rather than needing a service
+# container, so there is nothing to orchestrate.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only. Nothing here publishes, comments, or pushes.
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: build, test, lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # go-version-file reads the `go` directive from go.mod, so the Go version
+      # lives in exactly one place. go.mod says `go 1.26` (not a patch version)
+      # precisely so this does not trigger a toolchain download.
+      # `cache` defaults to true and keys the module and build caches on go.sum.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # gofmt is the whole formatting standard. `gofmt -l` exits 0 even when it
+      # lists files, so the output has to be tested rather than the exit code.
+      #
+      # node_modules is filtered rather than relying on this step running
+      # before `npm ci`: npm packages ship Go sources of their own (flatted,
+      # today), the Go tool skips that directory, and gofmt does not.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l . | grep -v '/node_modules/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean. Run: make fmt"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean"
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      # -count=1 defeats the test result cache; -race because the reconciler,
+      # the rate limiter and configclient are all concurrent.
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      # A contributor running `go mod tidy` should get an empty diff, not
+      # unrelated churn mixed into their change.
+      - name: go mod tidy is a no-op
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy. Run: go mod tidy"
+            exit 1
+          fi
+
+      # Pinned rather than `latest`: a new golangci-lint release adds checks,
+      # and that should turn CI red on the commit that bumps this line, not on
+      # an unrelated pull request. `verify` (on by default) also validates
+      # .golangci.yml against the schema, which catches a typo'd key that would
+      # otherwise silently disable a linter.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      # node-version-file reads engines.node from webui/package.json, so the
+      # Node version also lives in one place. vite 7 requires 20.19+/22.12+,
+      # which is what that field records.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: webui/package.json
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      # npm ci, not npm install: it installs exactly package-lock.json and
+      # fails if the lockfile and package.json disagree.
+      - name: npm ci
+        working-directory: webui
+        run: npm ci
+
+      - name: eslint
+        working-directory: webui
+        run: npm run lint
+
+      - name: vitest
+        working-directory: webui
+        run: npm run test
+
+      # Writes the bundle to web/ at the repository root (vite.config.js sets
+      # outDir: '../web'), which is what the Go console serves.
+      - name: build the console bundle
+        working-directory: webui
+        run: npm run build
+
+      # The two steps above create web/ and webui/node_modules. Both are
+      # gitignored; this asserts it rather than assuming it, so a change to
+      # .gitignore that starts tracking build output fails here instead of
+      # landing a bundle in a pull request.
+      - name: no build artefacts escaped .gitignore
+        run: |
+          dirty=$(git status --porcelain)
+          if [ -n "$dirty" ]; then
+            echo "::error::The build left changes in the working tree. Check .gitignore."
+            echo "$dirty"
+            exit 1
+          fi
+          echo "working tree clean"

@@ -3,8 +3,7 @@
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Go 1.26](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/ErasedKyte/Central-Config-Stream/pkg/configclient.svg)](https://pkg.go.dev/github.com/ErasedKyte/Central-Config-Stream/pkg/configclient)
-<!-- CI-BADGE-PLACEHOLDER: the GitHub Actions workflow badge goes here once the
-     workflow lands. Do not guess the URL — take it from the workflow file. -->
+[![CI](https://github.com/ErasedKyte/Central-Config-Stream/actions/workflows/ci.yml/badge.svg)](https://github.com/ErasedKyte/Central-Config-Stream/actions/workflows/ci.yml)
 
 A control plane for microservice configuration: feature flags, per-service
 appsettings, and localization bundles for a fleet of services.
@@ -47,7 +46,7 @@ known good rather than erroring.
 |---|---|---|
 | **Oracle** | any supported release | The source of truth in a deployed setup. The only production driver — `DB_DRIVER=oracle` is the default, and DDL for every table is in [`migrations/`](migrations/). |
 | **NATS 2.10+ with JetStream enabled** | 2.10+ | The distribution plane. KV buckets are a JetStream feature; a server without `--jetstream` cannot run this. |
-| **Go 1.26+** | see [`go.mod`](go.mod) (`go 1.26.2`) | To build the service, the console and `pkg/configclient`. |
+| **Go 1.26+** | see [`go.mod`](go.mod) (`go 1.26`) | To build the service, the console and `pkg/configclient`. |
 | **Node 20+** | see [`webui/package.json`](webui/package.json) | Only to build the React console. The service itself needs no Node. |
 
 **SQLite is the local test stack only.** `DB_DRIVER=sqlite` swaps in a parallel
@@ -467,6 +466,8 @@ deploying it.
 | [`docs/DEPLOY_JETSTREAM_K8S.md`](docs/DEPLOY_JETSTREAM_K8S.md) | deploying NATS JetStream and this service on Kubernetes |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | ECS log shape, metrics, what to alert on |
 | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) | current gaps, honestly listed |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to build, test and lint, and the ~45 sites a new config domain touches |
+| [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and what is in scope |
 
 Oracle DDL for every table is in [`migrations/`](migrations/).
 
@@ -492,7 +493,6 @@ Oracle DDL for every table is in [`migrations/`](migrations/).
   no "list flag values for environment X" route, so
   `HTTPFallback.FlagValueIDs` has to name the row ids by hand. What is left
   unconfigured is simply not fetched.
-- **No CI pipeline is checked in.** Build, vet, and test are run by hand.
 
 ## Licence
 

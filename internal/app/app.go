@@ -1,3 +1,13 @@
+// Package app is the assembly point: it reads configuration from the
+// environment, picks the Oracle or SQLite repositories, builds the domain
+// services and HTTP handlers, registers the routes behind the auth, token
+// scope, rate limit and audit middleware, and owns the server's lifecycle.
+//
+// Most of what lives here is wiring rather than logic, and the wiring is the
+// hazard — several of the connections it makes fail at runtime rather than at
+// compile time. A domain that is not registered with the reconciler still
+// serves writes; a route class not handled in middleware.go still answers.
+// CONTRIBUTING.md enumerates those sites under "Adding a config domain".
 package app
 
 import (

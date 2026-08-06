@@ -1,3 +1,17 @@
+// Package microconfig owns per-service appsettings: one JSON tree per
+// microservice and environment, published to the MICROCONFIG KV bucket at key
+// "{envID}.{microserviceID}". The same concept is /configs on the API and
+// SETTINGS_JSON in the database.
+//
+// It also owns the two reference tables the other domains point at —
+// environments and microservices — which is why the delete paths here refuse
+// to remove a row that flags, appsettings or localization still reference
+// rather than cascading. Losing an environment by accident would take its
+// configuration with it.
+//
+// Settings size is checked against the KV value limit before the database
+// write, so an oversized tree cannot be committed as a row that no consumer
+// will ever receive.
 package microconfig
 
 import "errors"

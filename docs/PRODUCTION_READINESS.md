@@ -217,17 +217,20 @@ DDL with a translation step. Neither is free; in the meantime, treat a
 `migrations/` change and a `sqlite.go` change as a single unit of work and say
 so in the pull request.
 
-### 3.6 No CI
+### 3.6 CI does not cover Oracle
 
-Build, vet, and test are run by hand. Nothing gates a merge. There is no
-`.github/workflows/` directory in the repository as it stands.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) gates every push and
+pull request on `gofmt`, `go build`, `go vet`, `go test -race`, `go mod tidy`,
+`golangci-lint`, and the web UI's lint, test and build. What it does not do is
+stand up a database: every Go test runs against SQLite and an embedded NATS
+server, so §3.1's Oracle statements are still only compile-verified.
 
-**Cost:** every gap above is one an unreviewed commit can widen silently, and
-§3.1 in particular cannot be closed without somewhere to run an Oracle
-container.
-**Fix:** a workflow running `go build ./...`, `go vet ./...`, `go test ./...`
-and the web UI's `npm ci && npm run lint && npm test`, on pull requests to
-`master`.
+**Cost:** the storage path that a deployment actually uses is the one path no
+gate exercises. A regression there is invisible until it reaches an
+environment with a real database.
+**Fix:** add an Oracle container to the workflow and run the repository suite
+against it. That is the single highest-value addition to CI, and it is what
+closes §3.1 rather than merely narrowing it.
 
 ### 3.7 Clock skew in the incremental reconcile
 

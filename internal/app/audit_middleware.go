@@ -150,9 +150,9 @@ func remoteHost(r *http.Request) string {
 	return truncate(host, 64)
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	return s[:max]
+	return s[:limit]
 }

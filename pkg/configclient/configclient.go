@@ -173,8 +173,10 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		}
 		// Cold start with NATS down: drop the half-open connection (nothing is
 		// watching it) and serve what the HTTP API can give us rather than
-		// booting with no config at all.
-		c.closeConn()
+		// booting with no config at all. The Drain error is discarded on
+		// purpose — the connection is being abandoned either way, and failing
+		// the whole warm-up over it would defeat the point of the fallback.
+		_ = c.closeConn()
 		if ferr := opts.HTTPFallback.hydrate(ctx, c); ferr != nil {
 			return nil, fmt.Errorf("configclient: KV warm-up failed (%v) and HTTP fallback failed: %w", err, ferr)
 		}

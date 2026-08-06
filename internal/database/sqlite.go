@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 
+	// Registers the pure-Go "sqlite" driver with database/sql. Imported for
+	// its side effect only; nothing here calls into it directly, and without
+	// it sql.Open("sqlite", …) fails at runtime rather than at compile time.
 	_ "modernc.org/sqlite"
 )
 

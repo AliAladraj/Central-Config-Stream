@@ -1,0 +1,38 @@
+# Editor defaults for central-config.
+#
+# This file describes what the repository already does rather than proposing
+# anything new: Go is tabs because gofmt says so, everything else is two
+# spaces, and no file in the tree has trailing whitespace or a missing final
+# newline today. Keep it that way and diffs stay about the change.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# gofmt indents with tabs and aligns with spaces. Setting a width here only
+# affects how wide the tab renders; it changes nothing on disk.
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# go.mod, go.sum and the Go template files gofmt does not touch still use tabs.
+[{go.mod,go.sum}]
+indent_style = tab
+indent_size = 4
+
+# Markdown: two spaces, and trailing whitespace is left alone because two
+# trailing spaces are a hard line break. Nothing in the tree relies on that
+# today, but stripping it silently would change rendering if anything did.
+[*.md]
+trim_trailing_whitespace = false
+
+# Makefiles are tab-sensitive: a recipe line indented with spaces is a syntax
+# error, not a style question.
+[Makefile]
+indent_style = tab
+indent_size = 4

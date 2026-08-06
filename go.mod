@@ -1,6 +1,6 @@
 module github.com/ErasedKyte/Central-Config-Stream
 
-go 1.26.2
+go 1.26
 
 require github.com/sijms/go-ora/v2 v2.9.0
 
@@ -8,6 +8,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
+	modernc.org/sqlite v1.56.0
 )
 
 require (
@@ -29,5 +30,4 @@ require (
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.56.0 // indirect
 )

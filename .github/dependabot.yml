@@ -1,0 +1,90 @@
+# Dependency updates.
+#
+# Monthly rather than weekly: this is a small dependency surface and a stream
+# of single-bump pull requests is the fastest way to teach people to ignore
+# them. Patch and minor updates are grouped into one pull request per ecosystem
+# for the same reason — CI either goes green on the group or it does not.
+# Majors stay separate, because those are the ones worth reading.
+#
+# Commit messages are prefixed to match the Conventional Commits convention
+# CONTRIBUTING.md documents, so Dependabot's history reads like everyone else's.
+version: 2
+
+updates:
+  # Go modules. `gomod` covers go.mod at the repository root; there is only one
+  # module here (the console and pkg/configclient live inside it).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The React console. Note the directory: package.json is in webui/, not at
+  # the root.
+  - package-ecosystem: npm
+    directory: /webui
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # Base images in the root Dockerfile: golang, node, and the two distroless
+  # runtime stages.
+  #
+  # deploy/compose/docker-compose.yml pins nats:2.10-alpine and is NOT covered
+  # here — the `docker` ecosystem tracks Dockerfiles, and Compose manifests are
+  # a separate ecosystem. That one image is reviewed by hand; JetStream is the
+  # distribution plane, so its version is a deliberate choice rather than
+  # something to take automatically.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      docker-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The actions used by .github/workflows/ci.yml. These are pinned by major
+  # tag, so this mostly surfaces the major bumps that need a look.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

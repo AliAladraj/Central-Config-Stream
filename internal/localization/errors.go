@@ -1,3 +1,12 @@
+// Package localization owns translation bundles: one JSON document per
+// microservice, environment and locale, published to the LOCALIZATION KV
+// bucket at key "{envID}.{microserviceID}.{locale}".
+//
+// The locale is validated rather than taken as given, because it is a key
+// component — a locale carrying a dot would produce a key no consumer can
+// parse back into its three parts. Bundle size is checked against the KV value
+// limit before the database write, so an oversized bundle is refused outright
+// instead of being committed as a row that can never reach a consumer.
 package localization
 
 import "errors"

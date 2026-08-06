@@ -1,0 +1,144 @@
+# golangci-lint configuration for central-config.
+#
+# The bar this encodes is the one CONTRIBUTING.md already describes: gofmt is
+# the formatting standard, go vet is the correctness floor, and errors are
+# wrapped rather than dropped. Everything here is either a correctness check or
+# a rule the codebase already follows — nothing is enabled that would require
+# restructuring working code to satisfy.
+#
+# Run: golangci-lint run    (or: make lint)
+version: "2"
+
+run:
+  # The messaging and end-to-end suites boot a real embedded JetStream server,
+  # so type-checking the test files pulls in a slower build. Still worth it:
+  # test files are where unchecked errors hide most often.
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck      # an unchecked error here is a silently dropped KV publish
+    - govet         # the same bar `go vet ./...` already enforces by hand
+    - staticcheck   # correctness + simplification + style (absorbs gosimple/stylecheck in v2)
+    - ineffassign   # assignments that are never read
+    - unused        # dead identifiers
+    - misspell      # comments are load-bearing documentation in this repo
+    - revive        # exported-symbol and package documentation hygiene
+
+  settings:
+    errcheck:
+      # check-blank is deliberately left off. This codebase uses an explicit
+      # `_ = f()` to mark an error it has decided not to act on — a deferred
+      # tx.Rollback after a committed transaction, a watcher.Stop on a path
+      # that is already unwinding, an Encode into a response whose header is
+      # already written. Those are documented decisions, not oversights, and
+      # forcing them through a handler would mean inventing error handling for
+      # cases where there is nothing correct left to do.
+      #
+      # check-type-assertions is likewise off: the two assertions in
+      # internal/obs are on values the package itself just put into the map,
+      # where a failed assertion is a programming error that should panic.
+      check-blank: false
+      check-type-assertions: false
+
+    # misspell intentionally has no settings block. Its `locale:` is left
+    # unset: the prose in this repository is British ("behaviour", "licence"),
+    # but the code cannot be — `unauthorized` is fixed by net/http's own
+    # constant names and appears in API error bodies that consumers match on.
+    # locale: UK would demand rewriting those strings, which is a contract
+    # change, not a spelling fix. The default mode catches genuine typos and
+    # leaves US/UK variants alone.
+
+    revive:
+      # Defaults plus the documentation rules. Kept to rules the codebase can
+      # actually satisfy today — no argument-limit or cyclomatic rules, which
+      # would flag the handler and assembly code that is deliberately flat.
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        # `exported` (a doc comment on every exported symbol) is deliberately
+        # NOT enabled. It reports 197 findings, almost all in internal/
+        # packages that have no consumers outside this module, and satisfying
+        # it would mean writing 197 restatements of the signature — "NewCounter
+        # creates a new Counter". CONTRIBUTING.md's house style is the
+        # opposite: comments say *why*, not *what*. The one package that is a
+        # real public API, pkg/configclient, is already documented. Enabling
+        # this would trade real comments for filler.
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+
+  exclusions:
+    generated: lax
+    presets:
+      # The `comments` preset is deliberately NOT enabled: it suppresses
+      # revive's package-comments and exported rules, which are two of the
+      # reasons revive is turned on here at all.
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+    # `go build ./...` never sees these, because the Go tool skips any
+    # directory called node_modules. golangci-lint walks the filesystem itself
+    # and does not, so once a contributor has run `make ui` it starts linting
+    # whatever Go sources happen to ship inside an npm package — today that is
+    # flatted/golang/pkg/flatted. Excluded here so `make lint` gives the same
+    # answer before and after the UI has been built.
+    paths:
+      - webui/node_modules
+      - ^web/
+
+    rules:
+      # Test files: a t.Setenv or cleanup call that fails does not change what
+      # is being asserted, and requiring a doc comment on a test helper is
+      # noise rather than documentation.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - revive
+
+      # revive wants flagsconfig's `FlagId` field renamed to `FlagID`. It is
+      # right — but that is a 26-site rename across six files in a package this
+      # config is not otherwise touching, and it is a judgement call for the
+      # package's owner rather than a mechanical lint fix. The JSON tag is
+      # explicit (`json:"flagId"`), so the wire format would not move; only the
+      # Go identifier would. Left as a deliberate open item, not a silent pass.
+      - path: internal/flagsconfig/model\.go
+        linters:
+          - revive
+        text: 'var-naming: struct field FlagId should be FlagID'
+
+issues:
+  # Defaults are 50 per linter and 3 per distinct message, which silently
+  # truncates the report — a contributor fixes three of something and finds
+  # four more waiting. Show everything; the repository is small enough.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  # gofmt is the whole formatting standard — see CONTRIBUTING.md. No goimports
+  # grouping convention beyond what gofmt enforces.
+  enable:
+    - gofmt
+
+  # Same reason as linters.exclusions.paths above: vendored Go inside npm
+  # packages is not this repository's code to format.
+  exclusions:
+    paths:
+      - webui/node_modules
+      - ^web/

@@ -1,3 +1,15 @@
+// Package database opens and bounds the connection pool, and hides the two
+// drivers behind one surface: Oracle (github.com/sijms/go-ora, the production
+// source of truth) and SQLite (modernc.org/sqlite, the local test stack).
+//
+// It also carries the differences that would otherwise leak into every
+// repository — CLOB binding, which go-ora needs for any document larger than a
+// VARCHAR2, and unique-violation detection, so a racing insert becomes a 409
+// rather than a 500. Both drivers are pure Go, so CGO_ENABLED=0 builds work.
+//
+// sqlite.go additionally defines the local schema and seed data by hand.
+// Nothing keeps that in step with migrations/, and because every test runs
+// against SQLite, a divergence shows up as a green build.
 package database
 
 import (

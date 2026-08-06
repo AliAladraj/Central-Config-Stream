@@ -1,0 +1,212 @@
+# What a `v*` tag turns into: a GitHub release carrying cross-compiled binaries
+# and checksums, and a container image on GHCR. Nothing else publishes anything,
+# and nothing publishes without the gate below passing first.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# The only two writes this repository ever needs: `contents` for the release and
+# its assets, `packages` for the GHCR push. Deliberately nothing else — a
+# workflow that can write the repository is one stolen action away from being
+# able to rewrite it, and neither job here reads an issue, a check or a pull
+# request.
+permissions:
+  contents: write
+  packages: write
+
+# Grouped like ci.yml, but without cancel-in-progress. A tag is pushed once and
+# the group will almost never have two members; if it somehow does, cancelling
+# the first run mid-upload leaves a half-populated release behind, which is
+# worse than two runs racing to produce identical artefacts.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ci.yml already runs this on every pull request, and it runs again here on
+  # purpose. A tag is a ref like any other: it can be pushed at any commit,
+  # including one that never opened a pull request, one on a branch that was
+  # force-pushed after its green tick, or one that passed before an unrelated
+  # dependency bump changed what `go build` resolves. The green tick is a fact
+  # about a commit at a moment; a release has to be a fact about the artefact
+  # being published now.
+  #
+  # And the two failures cost differently. A red CI run is a re-push. A bad
+  # release is a GitHub asset with a checksum, a GHCR tag people have already
+  # pulled, and a version number that can never be reused — so the gate is a
+  # precondition of publishing rather than a lookup of previous history.
+  #
+  # This is the Go half of ci.yml, not all of it. gofmt, golangci-lint and the
+  # JS suite guard how the source reads, and their opinion of a commit that is
+  # already tagged changes nothing about whether the binary is correct; build,
+  # vet and test are the three that decide whether the artefact works.
+  gate:
+    name: build, vet, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+  binaries:
+    name: binaries and release
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # fetch-depth: 0 rather than the default shallow clone. GoReleaser derives
+      # the version from the tag history — `git describe` needs the tags and the
+      # commits between them — and a depth-1 checkout has neither.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # CHANGELOG.md is already the answer to "what changed", written as
+      # capability rather than commit history, so the release page quotes it
+      # instead of holding a second, worse version of it. The heading match is
+      # anchored on `## [x.y.z]` and nothing after it, because the rest of the
+      # line changes as a release is cut: it reads `— UNRELEASED — tag pending`
+      # while the version is still being assembled and carries a date once it
+      # is finalised.
+      #
+      # An empty section fails the job. Tagging without writing the changelog
+      # entry is the mistake this is here to catch — it is silent otherwise, and
+      # the result is a release page that says nothing at all.
+      - name: Extract this tag's release notes from CHANGELOG.md
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          file="${RUNNER_TEMP}/release-notes.md"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$file"
+          if ! grep -q '[^[:space:]]' "$file"; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section. Add one before tagging — see docs/RELEASING.md."
+            exit 1
+          fi
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "Release notes for $version:"
+          cat "$file"
+
+      # Pinned exactly, for the reason ci.yml pins golangci-lint: GoReleaser
+      # changes what it produces between minor versions — archive naming and
+      # config keys have both moved under v2 — and that should turn this job red
+      # on the commit that bumps this line rather than on whichever tag happens
+      # to be cut next.
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.17.1
+          args: release --clean --release-notes=${{ steps.notes.outputs.file }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  image:
+    name: image to GHCR
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same three values the Makefile computes, spelled the same way, so an
+      # image and a `make build` binary of the same commit report the same
+      # thing. VERSION is the tag rather than `git describe` because on the
+      # tagged commit those are equal and github.ref_name needs no git at all.
+      - name: Build identity
+        id: identity
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Lowercase, because GHCR requires it and the repository is not:
+      # ghcr.io/erasedkyte/central-config, from ErasedKyte/Central-Config-Stream.
+      #
+      # `latest` comes from the default latest=auto: a plain vX.Y.Z moves it, a
+      # pre-release tag like v0.2.0-rc.1 does not. That is the same question
+      # .goreleaser.yaml's `prerelease: auto` asks, answered from the same tag,
+      # so the release page and the registry cannot disagree about what is
+      # current.
+      #
+      # No bare `{{major}}` tag. At 0.x a major-only tag would be `0`, and
+      # SemVer makes no compatibility promise across 0.y releases, so a `0` tag
+      # that silently moves from 0.1 to 0.2 promises something this project has
+      # not earned yet.
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/erasedkyte/central-config
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # `target: central-config` names the stage rather than relying on it being
+      # last in the Dockerfile, so a stage appended later cannot quietly change
+      # what gets published under this name.
+      #
+      # That stage is the service and nothing else. The Dockerfile's separate
+      # `testconsole` stage is the one that copies the compiled React bundle out
+      # of the Node stage; it is a local harness, it is never deployed, and it
+      # is not pushed here. Nothing in this image serves a browser UI.
+      #
+      # linux/amd64 only. The Dockerfile's build stage compiles in-image without
+      # a $BUILDPLATFORM/$TARGETARCH split, so asking buildx for linux/arm64
+      # would run the whole Go build under QEMU emulation for every release.
+      # Making it cross-compile properly is a Dockerfile change, not a workflow
+      # one; until then arm64 is served by the release binaries above, which are
+      # genuinely cross-compiled because CGO is out of the picture.
+      #
+      # The labels come from metadata-action and are applied with --label, which
+      # takes precedence over the Dockerfile's own LABEL lines. Those stay where
+      # they are: they are what a plain `docker build .` on a laptop produces,
+      # and this workflow is not the only way an image gets built.
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: central-config
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ steps.identity.outputs.commit }}
+            DATE=${{ steps.identity.outputs.date }}

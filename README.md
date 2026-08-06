@@ -117,6 +117,37 @@ Note `"enabled": 1` going in and `"enabled": true` coming out — see
 the seeded data table, four things worth trying, and a two-terminal setup that
 needs no Docker at all.
 
+### Install
+
+A `v*` tag publishes a container image and cross-compiled binaries; three ways
+to get the same service:
+
+```bash
+# the image — linux/amd64, distroless, non-root
+docker run --rm ghcr.io/erasedkyte/central-config:latest --version
+
+# a binary — pick your platform from the release page and verify it against
+# checksums.txt: https://github.com/ErasedKyte/Central-Config-Stream/releases
+tar xzf central-config_0.1.0_linux_amd64.tar.gz && ./central-config --version
+
+# from source — the module path carries the repository name, the binary does not
+go install github.com/ErasedKyte/Central-Config-Stream/cmd/central-config@latest
+```
+
+The first two report a real version, because the release pipeline stamps it in.
+`go install` does not pass `-ldflags`, so a binary installed that way honestly
+says `dev (commit none, built unknown)` — use it for a quick look, not for
+telling two deployments apart.
+
+**The image is the service alone; it serves no browser UI.** The console is a
+separate binary, and its React bundle is not in the archives — `web/` is
+gitignored and building it needs Node — so an unpacked `testconsole` answers
+`/api/state` and `/api/events` but tells the browser the UI has not been built.
+Getting the console *with* its UI means the compose stack above, which builds
+the bundle in a Node stage, or `cd webui && npm ci && npm run build` beside the
+binary. [`docs/RELEASING.md`](docs/RELEASING.md) is the other side of this: how
+a release is cut and how to check one landed.
+
 Building from source:
 
 ```bash
@@ -467,6 +498,7 @@ deploying it.
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | ECS log shape, metrics, what to alert on |
 | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) | current gaps, honestly listed |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to build, test and lint, and the ~45 sites a new config domain touches |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | cutting a release: finalising the changelog, tagging, and checking what the tag produced |
 | [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and what is in scope |
 | [`CHANGELOG.md`](CHANGELOG.md) | what each release changed, written as capability rather than commit history |
 

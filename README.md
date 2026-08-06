@@ -132,10 +132,7 @@ serves a browser UI showing that cache change as you write. It is the only
 showable artefact in an otherwise headless project, and it demonstrates things
 the API alone cannot:
 
-<!-- SCREENSHOT: a full-window capture of the Overview view — left nav, the
-     environment switcher and the three header pills across the top, the drift
-     report in the middle, and the live KV push panel on the right — belongs
-     here. No image can be captured in this environment. -->
+![The console's Overview view: health tiles, a green in-sync verdict comparing the database against the consumer's cache, the recent-change audit rows, and a live KV push log showing three keys arriving within 25ms of their writes.](docs/assets/console-overview.png)
 
 - **Seven views.** Overview (health, drift, recent pushes), Audit log,
   System (health, metrics, inventory), Flags (definitions and an
@@ -154,6 +151,8 @@ the API alone cannot:
   out, and the KV push that follows is timestamped on arrival; the header shows
   `last push +NNms` and each event carries its own figure. It is the number that
   makes "write-through to KV" concrete.
+
+![The Flags view: an environment × flag matrix with dev, staging and prod across the top, a filled cell wherever a flag value row exists and an add button where none does, beside the consumer's cached FLAGS, MICROCONFIG and LOCALIZATION values.](docs/assets/console-flags-matrix.png)
 
 The console proxies its admin calls so the browser never holds the token. It
 binds to `127.0.0.1` by default — reaching it from another machine needs

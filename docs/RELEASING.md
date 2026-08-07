@@ -142,13 +142,18 @@ having failed. Check that before debugging anything else.
 
 ## 5. After the tag lands
 
-The workflow publishes artefacts; it does not edit prose. Three places in the
-repository make claims that only a tag can settle, and every one of them is
-still wrong the moment §4 says the release is real:
+The workflow publishes artefacts; it does not edit prose. Four places in the
+repository make claims that only a tag can settle — some of them wrong until a
+release exists, some of them wrong again each time one does — and §4 calling the
+release real is the moment to go and read all four:
 
 - **[`README.md`](../README.md) § *Install*** — whether a `ghcr.io` pull and a
   release-page download work at all, and therefore whether the from-source
-  paths are the only ones on offer.
+  paths are the only ones on offer. Now that both do work, the section names a
+  version in three places: the `docker pull` tag, the `V=` line, and the note
+  that `latest` is the same digest. That last one stops being true the moment
+  this release moves `latest`, so it is the one to check rather than the one to
+  skim past.
 - **[`SECURITY.md`](../SECURITY.md) § *Supported versions*** — what the
   supported line is. Before a release it can only be `main`; after one it is
   the latest release plus `main`, which is a different answer to the only
@@ -158,6 +163,9 @@ still wrong the moment §4 says the release is real:
   own line: a `compare/v0.1.0...v0.1.1` for a patch, a
   `releases/tag/v0.1.0` for the first one. Any caveat above them about the URLs
   not resolving yet goes with them.
+- **[`docs/DEPLOY_JETSTREAM_K8S.md`](DEPLOY_JETSTREAM_K8S.md)** — the version it
+  offers as the one to pin in place of `latest`. The argument around it holds
+  whatever the number is; the number does not.
 
 Open that as a pull request off `main` in the same sitting as the tag. It cannot
 be done before, because until the tag exists the old text is the true text.

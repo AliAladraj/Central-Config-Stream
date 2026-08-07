@@ -15,14 +15,12 @@ than a public issue.
 
 ## Supported versions
 
-**There is no release yet — nothing is tagged, so `main` is the only supported
-line.** Test against `main` and report against a commit on it.
-
-Once a first `v*` tag exists — [`docs/RELEASING.md`](docs/RELEASING.md) is how —
-the supported line becomes the latest release plus `main`, on these terms: a fix
+**The supported line is the latest release plus `main`** — the tags are cut the
+way [`docs/RELEASING.md`](docs/RELEASING.md) describes — on these terms: a fix
 lands on `main` and goes out in the next release. There is no backporting to an
 older tag and no security branch, so the remedy is always to move forward rather
-than to wait for a patch on the version you happen to be on.
+than to wait for a patch on the version you happen to be on. Test against one of
+those two lines and report against it.
 
 Say which build you tested, because a fix is written against a commit rather
 than against a version number. Both binaries answer `--version` now, from the
@@ -30,13 +28,13 @@ linker's stamp alone, before any configuration is read and before the database
 or NATS is dialled — so it works on a machine with neither:
 
 ```
-central-config v0.1.0 (commit 1a2b3c4, built 2026-08-12T09:14:02Z)
+central-config v0.1.1 (commit a5ce601, built 2026-08-07T13:38:49Z)
 ```
 
-That line is the whole answer once a release exists. **Until one does, every
-build says `dev (commit none, built unknown)`** — the stamp comes from the
-release pipeline or from `make build`, and neither a laptop `go build` nor a
-`go install` passes `-ldflags`, deliberately, rather than pretending to a
+That line is the whole answer for anything off a release. **A build that says
+`dev (commit none, built unknown)` is one nobody stamped** — the stamp comes
+from the release pipeline or from `make build`, and neither a laptop `go build`
+nor a `go install` passes `-ldflags`, deliberately, rather than pretending to a
 version. A plain checkout has no binary to ask at all. In any of those cases
 give `git rev-parse HEAD` instead; that is the identifier a fix gets written
 against anyway. [`internal/buildinfo`](internal/buildinfo) is where those three

@@ -53,7 +53,7 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags="$LDFLAGS" -o /out/testconsole ./cmd/testconsole
 
 # ---- React UI for the test console ----
-FROM --platform=$BUILDPLATFORM node:20-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:25-alpine AS ui
 WORKDIR /ui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci

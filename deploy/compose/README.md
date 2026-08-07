@@ -78,9 +78,9 @@ Flag definitions: 7 `search_v2`, 8 `dark_mode`, 9 `new_pricing`.
 | flag value | 101 | 1 | `dark_mode`, disabled, value `off` |
 | flag value | 102 | 1 | `new_pricing`, enabled, value `0.25` |
 | flag value | 103 | **3** | `search_v2`, disabled — invisible to this console, which watches env 1 |
-| appsettings | 200 | 1 | service 1 `catalog-api`. The full example tree used by [`docs/CONSUMER_CONTRACT.md`](../../docs/CONSUMER_CONTRACT.md), including the `env:` secret markers, at KV key `1.1` |
-| appsettings | 201 | 1 | service 2 `cart-api`, at KV key `1.2` |
-| appsettings | 202 | 1 | service 3 `storefront-api`, at KV key `1.3` |
+| service settings | 200 | 1 | service 1 `catalog-api`. The full example tree used by [`docs/CONSUMER_CONTRACT.md`](../../docs/CONSUMER_CONTRACT.md), including the `env:` secret markers, at KV key `1.1` |
+| service settings | 201 | 1 | service 2 `cart-api`, at KV key `1.2` |
+| service settings | 202 | 1 | service 3 `storefront-api`, at KV key `1.3` |
 | localization | 300 | 1 | service 1, `en-US`, at KV key `1.1.en-US` |
 | localization | 301 | 1 | service 1, `pt-BR`, at KV key `1.1.pt-BR` |
 
@@ -117,7 +117,7 @@ curl -s http://localhost:8090/api/state | jq '.flags.dark_mode'
 
 Note the type change — `"enabled": 1` on the API, `"enabled": true` in KV.
 
-**2. Update appsettings.** Rows 200 and 201 are both env 1, so both land in the
+**2. Update service settings.** Rows 200 and 201 are both env 1, so both land in the
 console under `SERVICESETTINGS` keys `1.1` and `1.2`. Edit them in the Appsettings
 view, or:
 
@@ -172,7 +172,7 @@ cd webui && npm test                    # vitest — the drift comparison has it
 ```
 
 Seven views: Overview (health, drift, recent pushes), Audit log, System, Flags,
-Appsettings, Localization, and Environments & services — with an environment
+Service settings, Localization, and Environments & services — with an environment
 switcher in the header that narrows all of them.
 
 ## Endpoints on the console

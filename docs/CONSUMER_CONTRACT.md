@@ -12,7 +12,7 @@ this as a description of what that library does.
 
 ## 1. What you are integrating with
 
-`central-config` distributes feature flags, per-service appsettings, and
+`central-config` distributes feature flags, per-service settings, and
 localization bundles to services. It is split into two planes, and that split
 governs the whole design:
 
@@ -75,7 +75,7 @@ like rollout percentages or variant names; parse it yourself when a flag carries
 more than on/off. `updatedAt` is RFC 3339 and is useful for the ordering guard
 in §3.
 
-`SERVICESETTINGS` is **the entire appsettings tree as one JSON document** — not one
+`SERVICESETTINGS` is **the entire service settings tree as one JSON document** — not one
 key per setting. One push replaces the whole document atomically, so a consumer
 can never observe half an update. The shape of that tree is entirely yours; the
 control plane treats it as opaque JSON.
@@ -92,14 +92,14 @@ depth on the KV side.
 ### A value is at most 512 KiB
 
 The buckets are provisioned with an explicit 512 KiB ceiling per value, and the
-control plane refuses an oversized appsettings tree or translation bundle with a
+control plane refuses an oversized service settings tree or translation bundle with a
 `400` before the row is written. The two limits are the same constant on
 purpose: a payload accepted by the admin API but refused by JetStream would be
 drift no reconcile sweep could ever heal, failing on the same row every cycle.
 
 What this means for you:
 
-- **Do not design a consumer around one enormous document.** An appsettings tree
+- **Do not design a consumer around one enormous document.** An service settings tree
   is one key and is replaced whole; if yours is approaching a few hundred
   kilobytes, split the service or move the bulk out of configuration.
 - **Translation bundles are per locale**, not per service, so the ceiling
@@ -241,7 +241,7 @@ fetch-by-id endpoints are not:
 
 ```
 GET /localization/lookup/{msId}/{envId}/{locale}   reachable from what you know
-GET /configs/values/{id}    {id} is the appsettings row id, not the service id
+GET /configs/values/{id}    {id} is the service settings row id, not the service id
 GET /flags/values/{id}      {id} is the flag-value row id, not the flag key
 ```
 
@@ -274,7 +274,7 @@ subscribe to, and every consumer caches what it reads in plaintext process
 memory. KV has no field-level encryption. Unless you have configured per-service
 NATS permissions (see [`docs/SECURITY.md`](SECURITY.md)), a single shared
 credential means every
-consumer can read every other service's appsettings.
+consumer can read every other service's settings.
 
 The convention, which the seeded example data demonstrates: secret-shaped fields
 carry a marker instead of a value.
@@ -368,9 +368,9 @@ docker compose -f deploy/compose/docker-compose.yml up --build
 Point your service at `nats://localhost:4222` with environment id `1` (`dev`).
 The stack's admin token is `local-dev-token`, full scope — that is what to give
 a bootstrap fallback you want to exercise locally.
-Seeded there: flags `search_v2`, `dark_mode` and `new_pricing`; appsettings for
+Seeded there: flags `search_v2`, `dark_mode` and `new_pricing`; service settings for
 three services, ids `1`, `2` and `3`; and `en-US` / `pt-BR` localization bundles
-for service `1`. Service `1` (`catalog-api`) carries the full example appsettings
+for service `1`. Service `1` (`catalog-api`) carries the full example service settings
 tree, including the `env:` secret markers, at KV key `1.1`.
 
 The loop that proves the integration works:
@@ -401,6 +401,6 @@ passes 1, 2 and 6 but not 5 will look perfect until the first NATS restart.
 - Deletes remove keys rather than blanking them.
 - No secret value appears in any KV key, log line, or exception message.
 - Only this service's own `SERVICESETTINGS` key is watched, not the whole bucket.
-- No appsettings tree or bundle is anywhere near 512 KiB.
+- No service settings tree or bundle is anywhere near 512 KiB.
 - If an HTTP bootstrap fallback is configured, it carries a bearer token scoped
   to this environment, is validated at start, and runs once — never on a read.

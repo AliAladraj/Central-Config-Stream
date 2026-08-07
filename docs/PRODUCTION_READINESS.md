@@ -2,7 +2,7 @@
 
 **Purpose:** an honest picture of what exists, what is still missing, and what
 each gap would cost you in production.
-**Scope:** three config domains — **feature flags**, **appsettings**, and
+**Scope:** three config domains — **feature flags**, **service settings**, and
 **localization** — plus the JetStream KV distribution layer that carries them to
 consumers.
 **Last updated:** 2026-08-07
@@ -46,10 +46,10 @@ the fix is.
 | Domain | Package | Status |
 |---|---|---|
 | Feature flags | `internal/flagsconfig` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
-| Appsettings | `internal/servicesettings` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
+| Service settings | `internal/servicesettings` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
 | Localization | `internal/localization` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
 
-**Appsettings and localization updates run the same validation and referential
+**Service settings and localization updates run the same validation and referential
 checks as creates.** That matters because those updates rewrite the natural key:
 without the checks a `PUT` could point a row at a microservice or environment
 that does not exist, or collide with another row and surface as a `500` instead
@@ -86,7 +86,7 @@ the environment.
 - A byte-identical value is skipped rather than written, so a full sweep does
   not fan a no-op update out to the whole fleet or burn the bucket's history
   window on identical revisions.
-- Buckets carry an explicit **512 KiB value ceiling**, and the appsettings and
+- Buckets carry an explicit **512 KiB value ceiling**, and the service settings and
   localization services refuse anything larger *before* the database write, with
   a `400`. Both numbers are the same constant. Left unset a bucket inherits the
   server's `max_payload`, which is how a payload accepted with a `201` becomes

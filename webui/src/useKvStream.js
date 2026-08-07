@@ -17,7 +17,7 @@ const WRITE_MARK_TTL_MS = 5000
 // missed pushes, so the cache is read again rather than assumed intact.
 export function useKvStream() {
   const [status, setStatus] = useState('connecting')
-  const [snapshot, setSnapshot] = useState({ environmentId: null, flags: {}, micro: {}, localization: {} })
+  const [snapshot, setSnapshot] = useState({ environmentId: null, flags: {}, serviceSettings: {}, localization: {} })
   const [events, setEvents] = useState([])
   const [stateError, setStateError] = useState(null)
   // Monotonic, unlike events.length, which stops growing at MAX_EVENTS. Views
@@ -74,20 +74,20 @@ export function useKvStream() {
   return { status, snapshot, events, pushes, stateError, resync, pendingWrite }
 }
 
-function normalize(s) {
+export function normalize(s) {
   return {
     environmentId: s.environmentId ?? null,
     flags: s.flags ?? {},
-    micro: s.micro ?? {},
+    serviceSettings: s.serviceSettings ?? {},
     localization: s.localization ?? {},
   }
 }
 
 // applyEvent mirrors the consumer-side key layout:
-//   FLAGS         {env}.{flagKey}
-//   SERVICESETTINGS   {env}.{microserviceID}
-//   LOCALIZATION  {env}.{microserviceID}.{locale}
-function applyEvent(prev, e) {
+//   FLAGS           {env}.{flagKey}
+//   SERVICESETTINGS  {env}.{microserviceID}
+//   LOCALIZATION    {env}.{microserviceID}.{locale}
+export function applyEvent(prev, e) {
   const rest = stripEnv(e.key, prev.environmentId)
   const deleted = e.value === null || e.value === undefined
 
@@ -99,10 +99,10 @@ function applyEvent(prev, e) {
   }
 
   if (e.bucket === 'SERVICESETTINGS') {
-    const micro = { ...prev.micro }
-    if (deleted) delete micro[rest]
-    else micro[rest] = e.value
-    return { ...prev, micro }
+    const serviceSettings = { ...prev.serviceSettings }
+    if (deleted) delete serviceSettings[rest]
+    else serviceSettings[rest] = e.value
+    return { ...prev, serviceSettings }
   }
 
   if (e.bucket === 'LOCALIZATION') {

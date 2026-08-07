@@ -6,7 +6,7 @@ between the two. That shapes what this document asks of you: not ceremony, but
 knowing which of the many places a change has to land, and being honest in the
 pull request about what you did and did not verify.
 
-If you are adding a new configuration domain alongside flags, appsettings and
+If you are adding a new configuration domain alongside flags, service settings and
 localization, skip to [Adding a config domain](#adding-a-config-domain). That
 list is the single most useful thing in this file, because roughly half of the
 places it names fail at *runtime* rather than at compile time — you can ship a
@@ -308,7 +308,7 @@ the Postgres side of it.
 
 ## Adding a config domain
 
-Flags, appsettings and localization are three instances of one shape, and the
+Flags, service settings and localization are three instances of one shape, and the
 shape is spread across the codebase rather than abstracted. Adding a fourth —
 say routing rules, or per-service rate limits — touches **around 45 sites in 12
 existing files** (§3–§13), plus a new package of its own, a new migration, five
@@ -481,7 +481,7 @@ function that parses a key and applies or deletes; the public reader method; the
 `Snapshot` struct field and its copy loop; and the `Status.Counts` field.
 
 Decide explicitly whether the domain is environment-wide (like flags) or
-per-service (like appsettings and localization), because that decides the watch
+per-service (like service settings and localization), because that decides the watch
 prefix and therefore how much of the fleet's configuration every consumer holds
 in memory. Miss the `startWatch` call and the whole feature is invisible to
 consumers while every server-side test still passes.

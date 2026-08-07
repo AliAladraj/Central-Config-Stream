@@ -112,8 +112,8 @@ subscribe: "_INBOX.>"
 
 **Do not issue consumers a credential that subscribes to `$KV.FLAGS.>` and the
 rest fleet-wide.** It is the obvious shape and it is wrong: it lets any service
-holding it read every other service's appsettings, in every environment, and
-appsettings trees are exactly where connection details and integration endpoints
+holding it read every other service's settings, in every environment, and
+service settings trees are exactly where connection details and integration endpoints
 accumulate. The `env:VAR_NAME` marker convention keeps real secret values out of
 KV, but a convention is a weak control and nothing enforces it.
 
@@ -150,7 +150,7 @@ consumer credential is the intuitive shape and it breaks watching outright; the
 allow list above is already a deny for the `$KV.*` subjects, which is the part
 that matters.
 
-Flags stay environment-wide because flags are not per-service. Appsettings and
+Flags stay environment-wide because flags are not per-service. Service settings and
 localization become per-service, which is what closes the leak. The environment
 number is in every subject, so a dev credential cannot carry `3.` subjects —
 without that, a leaked dev credential still reads production, and the API's own

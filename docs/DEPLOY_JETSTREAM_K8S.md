@@ -238,12 +238,14 @@ both are checked.
 Apply the Deployment + Service ([`deploy/k8s/central-config.yaml`](../deploy/k8s/central-config.yaml)).
 
 **Set `image:` first.** The manifest names
-`ghcr.io/alialadraj/central-config:latest`, and **no image has been published
-yet** — nothing is tagged, so there is no release and no GHCR package (see
-[`docs/RELEASING.md`](RELEASING.md)). Applied as shipped, the pod sits in
-`ImagePullBackOff`. Point it at an image you built and pushed yourself, or at a
-released tag once one exists; either way pin a version rather than `latest`, so
-a rollout is a decision rather than whatever the registry last answered.
+`ghcr.io/alialadraj/central-config:latest`, which resolves: the package is
+public and pulls anonymously, and one manifest list covers linux/amd64 and
+linux/arm64, so a node gets its own architecture without being told which.
+Applied as shipped the pod therefore comes up — and that is the reason to change
+it rather than a reason not to. Pin the version you tested (`:0.1.1`, or the
+digest it resolves to) instead of `latest`, so a rollout is a decision rather
+than whatever the registry last answered.
+[`docs/RELEASING.md`](RELEASING.md) lists the tags each release publishes.
 
 ```bash
 kubectl -n central-config apply -f deploy/k8s/central-config.yaml

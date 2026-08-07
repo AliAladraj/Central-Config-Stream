@@ -44,10 +44,10 @@ release page, and leaving it in place breaks nothing. It stays wrong in
 every fork of it, permanently announcing a shipped version as unreleased.
 
 `## [Unreleased]` above it is deliberately empty and stays that way, so the next
-change has somewhere obvious to land. The two link definitions at the foot of
-the file resolve for the first time at this point too; until a tag exists,
-neither a `compare/v0.1.0...HEAD` nor a `releases/tag/v0.1.0` URL has anything
-to point at.
+change has somewhere obvious to land. Leave the link definitions at the foot of
+the file to §5: a `releases/tag/v0.1.0` or a `compare/v0.1.0...v0.1.1` points at
+nothing until the tag is pushed, so editing them here means merging a pull
+request whose links are broken on arrival.
 
 **Merge that, and check CI is green on the commit you are about to tag.** The
 workflow re-runs the gate anyway, but finding out here costs a push and finding
@@ -140,7 +140,45 @@ having failed. Check that before debugging anything else.
 
 ---
 
-## 5. When a release is wrong
+## 5. After the tag lands
+
+The workflow publishes artefacts; it does not edit prose. Four places in the
+repository make claims that only a tag can settle — some of them wrong until a
+release exists, some of them wrong again each time one does — and §4 calling the
+release real is the moment to go and read all four:
+
+- **[`README.md`](../README.md) § *Install*** — whether a `ghcr.io` pull and a
+  release-page download work at all, and therefore whether the from-source
+  paths are the only ones on offer. Now that both do work, the thing that goes
+  stale is the `docker pull` tag, which names a version outright. Check the
+  `go install` ref while you are there: `@latest` means the newest tag, so the
+  line that offers the source tree has to say `@main`.
+- **[`SECURITY.md`](../SECURITY.md) § *Supported versions*** — what the
+  supported line is. Before a release it can only be `main`; after one it is
+  the latest release plus `main`, which is a different answer to the only
+  question that section is asked.
+- **[`CHANGELOG.md`](../CHANGELOG.md)'s link definitions** — the `[Unreleased]`
+  compare has to move to the tag just cut, and the released section needs its
+  own line: a `compare/v0.1.0...v0.1.1` for a patch, a
+  `releases/tag/v0.1.0` for the first one. Any caveat above them about the URLs
+  not resolving yet goes with them.
+- **[`docs/DEPLOY_JETSTREAM_K8S.md`](DEPLOY_JETSTREAM_K8S.md)** — the version it
+  offers as the one to pin in place of `latest`. The argument around it holds
+  whatever the number is; the number does not.
+
+Open that as a pull request off `main` in the same sitting as the tag. It cannot
+be done before, because until the tag exists the old text is the true text.
+
+This is a numbered step rather than a footnote because both of the first two
+shipped stale through v0.1.0 *and* v0.1.1, still announcing that nothing was
+tagged and that a pull 404s, and it was an external reader who noticed rather
+than anything in this process. A claim about whether a release exists is
+precisely the claim that cutting a release invalidates, and nothing else here
+reads those files.
+
+---
+
+## 6. When a release is wrong
 
 A version number is cheap and a moving one is not. Deleting the GitHub release
 and the tag is easy; retracting the image is not — GHCR keeps the digest,

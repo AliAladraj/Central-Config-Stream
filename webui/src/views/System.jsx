@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as api from '../api.js'
-import { Banner, Loading } from '../ui.jsx'
+import { Banner, Loading, PageHeader, Refresh, ScopeNote, Tabs } from '../ui.jsx'
 
 // /health, /metrics and /inventory as first-class reads. Metrics is Prometheus
 // text; the counters that say whether KV publishing is actually working are
@@ -16,17 +16,20 @@ const HEADLINE = [
   ['centralconfig_http_panics_total', 'Handler panics'],
 ]
 
+const TABS = [
+  { id: 'health', label: 'Health & metrics' },
+  { id: 'inventory', label: 'Inventory' },
+]
+
 export default function System() {
   const [tab, setTab] = useState('health')
   return (
     <>
-      <div className="view-head">
-        <h2>System</h2>
-        <div className="tabs">
-          <button className={tab === 'health' ? 'active' : ''} onClick={() => setTab('health')}>Health &amp; metrics</button>
-          <button className={tab === 'inventory' ? 'active' : ''} onClick={() => setTab('inventory')}>Inventory</button>
-        </div>
-      </div>
+      <PageHeader
+        title="System"
+        subtitle="What this process reports about itself: readiness, the counters that say whether KV publishing is working, and every editable row with its id."
+      />
+      <Tabs tabs={TABS} active={tab} onSelect={setTab} />
       {tab === 'health' ? <HealthMetrics /> : <InventoryView />}
     </>
   )
@@ -58,8 +61,9 @@ function HealthMetrics() {
   return (
     <div className="panel">
       <div className="toolbar">
-        <button className="ghost" onClick={() => setNonce((n) => n + 1)}>Refresh</button>
+        <Refresh onClick={() => setNonce((n) => n + 1)} />
         <button className="ghost" onClick={() => setRaw((r) => !r)}>{raw ? 'Show summary' : 'Show raw /metrics'}</button>
+        <ScopeNote global reason="this process serves every environment it is scoped to" />
       </div>
 
       <div className="stat-row">
@@ -141,8 +145,9 @@ function InventoryView() {
   return (
     <div className="panel">
       <div className="toolbar">
-        <button className="ghost" onClick={() => setNonce((n) => n + 1)}>Refresh</button>
+        <Refresh onClick={() => setNonce((n) => n + 1)} />
         <span className="t">GET /inventory — every editable row with the id an update targets.</span>
+        <ScopeNote global reason="the inventory is scoped by your token, not by the header" />
       </div>
       <div className="stat-row">
         {counts.map(([label, n]) => (

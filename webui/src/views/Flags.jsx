@@ -1,26 +1,39 @@
 import { useCallback, useMemo, useState } from 'react'
 import * as api from '../api.js'
-import { Banner, Empty, KvKey, Loading, Pager, fmtTime, useDebounced, useList, useResetOnChange } from '../ui.jsx'
+import {
+  Banner, Empty, KvKey, Loading, PAGE_SIZE, PageHeader, Pager, Refresh,
+  ScopeNote, Tabs, fmtTime, useDebounced, useList, useResetOnChange,
+} from '../ui.jsx'
 
 // Flags are the one domain where a value exists once per environment, so the
 // natural view is a matrix rather than a list: "what is search_v2 in prod"
 // is the question, and a flat list of value rows answers it only by eye.
 
+const TABS = [
+  { id: 'matrix', label: 'Matrix' },
+  { id: 'values', label: 'Value rows' },
+  { id: 'defs', label: 'Definitions' },
+]
+
 export default function Flags({ ctx }) {
   const [tab, setTab] = useState('matrix')
+  const [creating, setCreating] = useState(false)
+
+  // The create action belongs to the definitions tab, so asking for it from
+  // anywhere else goes there rather than opening a form the reader cannot see.
+  const newFlag = () => { setTab('defs'); setCreating(true) }
+
   return (
     <>
-      <div className="view-head">
-        <h2>Flags</h2>
-        <div className="tabs">
-          <button className={tab === 'matrix' ? 'active' : ''} onClick={() => setTab('matrix')}>Matrix</button>
-          <button className={tab === 'values' ? 'active' : ''} onClick={() => setTab('values')}>Value rows</button>
-          <button className={tab === 'defs' ? 'active' : ''} onClick={() => setTab('defs')}>Definitions</button>
-        </div>
-      </div>
+      <PageHeader
+        title="Flags"
+        subtitle="A flag is defined once and carries one value per environment. The matrix is the view that answers what a flag is set to where."
+        action={<button className="ghost" onClick={newFlag}>New flag</button>}
+      />
+      <Tabs tabs={TABS} active={tab} onSelect={setTab} />
       {tab === 'matrix' && <Matrix ctx={ctx} />}
       {tab === 'values' && <ValueRows ctx={ctx} />}
-      {tab === 'defs' && <Definitions ctx={ctx} />}
+      {tab === 'defs' && <Definitions ctx={ctx} creating={creating} setCreating={setCreating} />}
     </>
   )
 }
@@ -64,10 +77,11 @@ function Matrix({ ctx }) {
           <span>Flag key contains</span>
           <input value={flagKey} onChange={(e) => setFlagKey(e.target.value)} placeholder="all flags" />
         </label>
-        <button className="ghost" onClick={reload}>Refresh</button>
+        <Refresh onClick={reload} />
         <span className="t spacer-note">
           A filled cell is a flag value row. Empty means the flag has no value in that environment.
         </span>
+        <ScopeNote global reason="the matrix shows every environment by design; that is the point of it" />
       </div>
 
       {loading && rows.length === 0 ? <Loading what="the matrix" /> : (
@@ -261,7 +275,7 @@ function CellEditor({ ctx, cell, onClose, onSaved }) {
 function ValueRows({ ctx }) {
   const { envId, refs, write, confirm } = ctx
   const [flagKey, setFlagKey] = useState('')
-  const [limit, setLimit] = useState(25)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
 
   const query = useDebounced(flagKey)
@@ -292,8 +306,8 @@ function ValueRows({ ctx }) {
           <span>flagKey</span>
           <input value={flagKey} onChange={(e) => { setFlagKey(e.target.value); setOffset(0) }} placeholder="all" />
         </label>
-        <span className="t">environmentId comes from the header switcher</span>
-        <button className="ghost" onClick={reload}>Refresh</button>
+        <Refresh onClick={reload} />
+        <ScopeNote envId={envId} envName={refs.envName} />
       </div>
 
       {error ? <Banner problem={{ action: 'Load flag value rows', error }} />
@@ -333,10 +347,10 @@ function ValueRows({ ctx }) {
 
 // ── flag definitions ────────────────────────────────────────────────────────
 
-function Definitions({ ctx }) {
+function Definitions({ ctx, creating, setCreating }) {
   const { refs, write, confirm } = ctx
   const [flagKey, setFlagKey] = useState('')
-  const [limit, setLimit] = useState(25)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
   const [newKey, setNewKey] = useState('')
   const [newActive, setNewActive] = useState('1')
@@ -355,7 +369,7 @@ function Definitions({ ctx }) {
 
   const create = async () => {
     const r = await write('POST /flags', () => api.createFlag({ flagKey: newKey, isActive: Number(newActive) }))
-    if (r.ok) { setNewKey(''); reload(); refs.reload() }
+    if (r.ok) { setNewKey(''); setCreating(false); reload(); refs.reload() }
   }
 
   const remove = async (row) => {
@@ -381,33 +395,39 @@ function Definitions({ ctx }) {
 
   return (
     <div className="panel">
-      <div className="create-card">
-        <h3>New flag</h3>
-        <div className="row">
-          <label className="field">
-            <span>flagKey</span>
-            <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="search_v3" />
-          </label>
-          <label className="field">
-            <span>isActive</span>
-            <select value={newActive} onChange={(e) => setNewActive(e.target.value)}>
-              <option value="1">1 · active</option>
-              <option value="0">0 · inactive</option>
-            </select>
-          </label>
-        </div>
-        {keyProblem && <p className="field-err">{keyProblem}</p>}
-        <p className="hint">A definition carries no environment. Give it a value per environment from the matrix.</p>
-        <button disabled={!newKey || !!keyProblem} onClick={create}>Create flag</button>
-      </div>
-
       <div className="toolbar">
         <label className="field">
           <span>flagKey contains</span>
           <input value={flagKey} onChange={(e) => { setFlagKey(e.target.value); setOffset(0) }} placeholder="all" />
         </label>
-        <button className="ghost" onClick={reload}>Refresh</button>
+        <Refresh onClick={reload} />
+        <button className="ghost" onClick={() => setCreating((c) => !c)}>New flag</button>
+        <ScopeNote global reason="a flag definition carries no environment" />
       </div>
+
+      {creating && (
+        <div className="new-row">
+          <div className="row">
+            <label className="field">
+              <span>flagKey</span>
+              <input autoFocus value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="search_v3" />
+            </label>
+            <label className="field">
+              <span>isActive</span>
+              <select value={newActive} onChange={(e) => setNewActive(e.target.value)}>
+                <option value="1">1 · active</option>
+                <option value="0">0 · inactive</option>
+              </select>
+            </label>
+          </div>
+          {keyProblem && <p className="field-err">{keyProblem}</p>}
+          <p className="hint">A definition carries no environment. Give it a value per environment from the matrix.</p>
+          <div className="toolbar">
+            <button disabled={!newKey || !!keyProblem} onClick={create}>Create flag</button>
+            <button className="ghost" onClick={() => { setCreating(false); setNewKey('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {error ? <Banner problem={{ action: 'Load flag definitions', error }} />
         : loading && rows.length === 0 ? <Loading what="flags" />

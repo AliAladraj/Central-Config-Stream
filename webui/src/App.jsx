@@ -137,6 +137,11 @@ export default function App() {
   const lastLatency = events[0]?.latencyMs
   const View = VIEWS[view]
 
+  // "All environments" is not a divergence: it includes the watched one, so a
+  // write can still land in the live panel. Only a specific other one is.
+  const watchedName = snapshot.environmentId ? refs.envName(snapshot.environmentId) : '…'
+  const divergent = envId !== '' && String(envId) !== String(snapshot.environmentId)
+
   const ctx = useMemo(() => ({
     envId, setEnvId, refs, write, confirm, snapshot, setView,
     consumerError: stateError, pushes, resync,
@@ -148,8 +153,14 @@ export default function App() {
         <button className="ghost nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Toggle navigation">≡</button>
         <h1>central&#8209;config <span className="t">console</span></h1>
 
+        {/* Two unrelated environments used to sit side by side here, both just
+            called "environment": the one the admin views are scoped to, and the
+            fixed one this console's own consumer watches. Selecting prod while
+            watching a dev cache was possible and nothing said so. They are
+            labelled by verb now — editing versus watching — and the mismatch is
+            called out rather than left for the reader to notice. */}
         <label className="env-switch">
-          <span>Environment</span>
+          <span>Editing</span>
           <select value={envId} onChange={(e) => setEnvId(e.target.value)}>
             <option value="">All environments</option>
             {refs.environments.map((e) => (
@@ -163,8 +174,15 @@ export default function App() {
             {status === 'live' ? 'watching KV' : status}
           </span>
           <span className={`pill ${stateError ? 'down' : ''}`}>
-            {stateError ? 'consumer cache unavailable' : `consumer env ${snapshot.environmentId ?? '…'}`}
+            {stateError
+              ? 'consumer cache unavailable'
+              : `watching ${watchedName} (id ${snapshot.environmentId ?? '…'})`}
           </span>
+          {divergent && (
+            <span className="pill warn" title="The environment you are editing is not the one this console's consumer watches, so the live panel will not show your writes landing.">
+              editing {refs.envName(envId)}, not watching it
+            </span>
+          )}
           <span className="pill">
             {lastLatency != null ? `last push +${lastLatency}ms` : 'no push yet'}
           </span>

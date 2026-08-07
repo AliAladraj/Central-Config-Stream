@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../api.js'
-import { Banner, Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, useDebounced, useList, useResetOnChange } from '../ui.jsx'
+import {
+  Banner, Empty, JsonEditor, KvKey, Loading, PAGE_SIZE, PageHeader, Pager,
+  Refresh, ScopeNote, fmtTime, jsonValue, useDebounced, useList, useResetOnChange,
+} from '../ui.jsx'
 
 // One row is a whole locale bundle for a (service, environment, locale) tuple,
 // which is also exactly one KV key — apps load a locale atomically.
@@ -9,7 +12,7 @@ export default function Localization({ ctx }) {
   const { envId, refs, write, confirm, snapshot } = ctx
   const [msId, setMsId] = useState('')
   const [locale, setLocale] = useState('')
-  const [limit, setLimit] = useState(25)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
   const [selected, setSelected] = useState(null)
   const [creating, setCreating] = useState(false)
@@ -40,10 +43,11 @@ export default function Localization({ ctx }) {
 
   return (
     <>
-      <div className="view-head">
-        <h2>Localization</h2>
-        <button className="ghost" onClick={() => { setCreating(true); setSelected(null) }}>New bundle</button>
-      </div>
+      <PageHeader
+        title="Localization"
+        subtitle="One row is a whole locale bundle for a service in an environment, which is also exactly one KV key — apps load a locale atomically."
+        action={<button className="ghost" onClick={() => { setCreating(true); setSelected(null) }}>New bundle</button>}
+      />
 
       <div className="panel">
         <div className="toolbar">
@@ -58,8 +62,8 @@ export default function Localization({ ctx }) {
             <span>locale</span>
             <input value={locale} onChange={(e) => { setLocale(e.target.value); setOffset(0) }} placeholder="all" />
           </label>
-          <span className="t">environment comes from the header switcher</span>
-          <button className="ghost" onClick={reload}>Refresh</button>
+          <Refresh onClick={reload} />
+          <ScopeNote envId={envId} envName={refs.envName} />
         </div>
 
         {error ? <Banner problem={{ action: 'Load localization bundles', error }} />

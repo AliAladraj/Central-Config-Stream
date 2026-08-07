@@ -44,10 +44,10 @@ release page, and leaving it in place breaks nothing. It stays wrong in
 every fork of it, permanently announcing a shipped version as unreleased.
 
 `## [Unreleased]` above it is deliberately empty and stays that way, so the next
-change has somewhere obvious to land. The two link definitions at the foot of
-the file resolve for the first time at this point too; until a tag exists,
-neither a `compare/v0.1.0...HEAD` nor a `releases/tag/v0.1.0` URL has anything
-to point at.
+change has somewhere obvious to land. Leave the link definitions at the foot of
+the file to §5: a `releases/tag/v0.1.0` or a `compare/v0.1.0...v0.1.1` points at
+nothing until the tag is pushed, so editing them here means merging a pull
+request whose links are broken on arrival.
 
 **Merge that, and check CI is green on the commit you are about to tag.** The
 workflow re-runs the gate anyway, but finding out here costs a push and finding

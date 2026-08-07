@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { atDots } from './ui.jsx'
 
 // The live rail. It stays on screen in every view because the question it
 // answers — did the change I just made actually reach a consumer — is the one
@@ -24,7 +25,7 @@ function FlagRow({ flagKey, payload, envId }) {
     <tr className={flashing ? 'flash' : undefined}>
       <td>
         {flagKey}
-        <div className="kvkey tiny"><span className="kvkey-env">{envId}.</span>{flagKey}</div>
+        <div className="kvkey tiny"><span className="kvkey-env">{envId}.</span><wbr />{atDots(flagKey)}</div>
       </td>
       <td className={payload.enabled ? 'on' : 'off'}>{String(payload.enabled)}</td>
       <td>{payload.value}</td>
@@ -39,7 +40,7 @@ function JsonRow({ label, kvRest, value, envId }) {
     <tr className={flashing ? 'flash' : undefined}>
       <td>
         {label}
-        <div className="kvkey tiny"><span className="kvkey-env">{envId}.</span>{kvRest}</div>
+        <div className="kvkey tiny"><span className="kvkey-env">{envId}.</span><wbr />{atDots(kvRest)}</div>
       </td>
       <td className="clip">{json}</td>
     </tr>
@@ -104,7 +105,7 @@ export function EventLog({ events }) {
         <div key={e.id}>
           <span className="t">{e.receivedAt?.substring(11, 23)}</span>{' '}
           <span className="b">{e.bucket}</span>{' '}
-          <span className="kvkey">{e.key}</span>{' '}
+          <span className="kvkey">{atDots(e.key)}</span>{' '}
           {e.value == null ? <span className="err">DELETE</span> : <span className="clip-inline">{JSON.stringify(e.value)}</span>}
           {e.latencyMs != null && <span className="lat"> +{e.latencyMs}ms after write</span>}
         </div>

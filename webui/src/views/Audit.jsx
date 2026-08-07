@@ -92,7 +92,11 @@ export default function Audit({ ctx }) {
                     {rows.map((row) => (
                       <Fragment key={row.id}>
                         <tr className={open === row.id ? 'sel' : undefined}>
-                          <td className="nowrap">{row.occurredAt?.replace('T', ' ').replace('Z', '')}</td>
+                          {/* The widest fixed thing in the row: 19% of the table spent on a
+                              datetime nothing else can compress. It keeps its space when the
+                              table has room and folds at the date/time boundary when it does
+                              not, which is what buys the last column back on a laptop. */}
+                          <td>{row.occurredAt?.replace('T', ' ').replace('Z', '')}</td>
                           <td><span className="actor">{row.actor || '—'}</span></td>
                           <td><span className={`method ${row.method}`}>{row.method}</span></td>
                           <td className="mono">{row.path}</td>

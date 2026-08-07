@@ -149,11 +149,10 @@ release real is the moment to go and read all four:
 
 - **[`README.md`](../README.md) § *Install*** — whether a `ghcr.io` pull and a
   release-page download work at all, and therefore whether the from-source
-  paths are the only ones on offer. Now that both do work, the section names a
-  version in three places: the `docker pull` tag, the `V=` line, and the note
-  that `latest` is the same digest. That last one stops being true the moment
-  this release moves `latest`, so it is the one to check rather than the one to
-  skim past.
+  paths are the only ones on offer. Now that both do work, the thing that goes
+  stale is the `docker pull` tag, which names a version outright. Check the
+  `go install` ref while you are there: `@latest` means the newest tag, so the
+  line that offers the source tree has to say `@main`.
 - **[`SECURITY.md`](../SECURITY.md) § *Supported versions*** — what the
   supported line is. Before a release it can only be `main`; after one it is
   the latest release plus `main`, which is a different answer to the only

@@ -40,6 +40,24 @@ updates:
       prefix: chore
       include: scope
     groups:
+      # ESLint and everything that peer-depends on it, across every update type
+      # including major. Dependabot assigns a dependency to the first group it
+      # matches, so this has to sit above the catch-all below.
+      #
+      # Raised because eslint 9 to 10 arrived as three separate pull requests —
+      # eslint, @eslint/js and eslint-plugin-react-hooks — and every one of them
+      # failed at `npm ci`, because eslint-plugin-react still peer-refuses 10.
+      # No ordering of those merges works: the blocker is a fourth package that
+      # none of them touch. A plugin ecosystem only moves as a set, so it has to
+      # be offered as one.
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "@eslint-community/*"
+          - "eslint-plugin-*"
+          - "eslint-config-*"
+          - "globals"
       npm-minor-patch:
         patterns:
           - "*"

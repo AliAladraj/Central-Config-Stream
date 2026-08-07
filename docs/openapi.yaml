@@ -27,7 +27,7 @@ info:
       `/localization/{id}`, and updates at `/localization/values`.
 
     One concept wears several names. The per-service JSON tree is *appsettings*
-    in prose, `/configs` here, `MICROCONFIG` in KV, and `SETTINGS_JSON` in the
+    in prose, `/configs` here, `SERVICESETTINGS` in KV, and `SETTINGS_JSON` in the
     database. They are all the same thing.
 
     One shape to guard against before writing a client: **an empty listing comes
@@ -125,7 +125,7 @@ tags:
   - name: appsettings
     description: |-
       The per-service JSON tree, one row per (microservice, environment). Served
-      under `/configs`, published to the `MICROCONFIG` bucket as one document so
+      under `/configs`, published to the `SERVICESETTINGS` bucket as one document so
       a consumer can never observe half an update.
   - name: flags
     description: |-
@@ -1932,7 +1932,7 @@ components:
       type: object
       description: |-
         One microservice's appsettings tree in one environment. The same concept is
-        *appsettings* in prose, `MICROCONFIG` in KV and `SETTINGS_JSON` in the
+        *appsettings* in prose, `SERVICESETTINGS` in KV and `SETTINGS_JSON` in the
         database.
       properties:
         id:
@@ -2072,7 +2072,7 @@ components:
           type: [array, 'null']
           items:
             $ref: '#/components/schemas/InventoryFlag'
-        microConfigs:
+        serviceSettings:
           type: [array, 'null']
           items:
             $ref: '#/components/schemas/InventoryMicro'
@@ -2080,7 +2080,7 @@ components:
           type: [array, 'null']
           items:
             $ref: '#/components/schemas/InventoryLoc'
-      required: [flags, microConfigs, localization]
+      required: [flags, serviceSettings, localization]
 
     InventoryFlag:
       type: object
@@ -2175,7 +2175,7 @@ components:
           type: string
           description: |-
             Which domain the write was aimed at, as the route declared it —
-            `flagvalues`, `microconfig`, `localization`, `flags`, `environments`,
+            `flagvalues`, `servicesettings`, `localization`, `flags`, `environments`,
             `microservices`.
         targetId:
           type: string

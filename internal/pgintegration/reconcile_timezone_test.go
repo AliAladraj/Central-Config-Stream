@@ -7,7 +7,7 @@ import (
 
 	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
 	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
 // nonUTCZones are the session time zones the reconcile window is exercised
@@ -74,7 +74,7 @@ func TestReconcileWindowIgnoresTheSessionTimeZone(t *testing.T) {
 			}
 
 			flags := flagsconfig.NewPostgresRepository(s.DB)
-			micro := microconfig.NewPostgresRepository(s.DB)
+			micro := servicesettings.NewPostgresRepository(s.DB)
 			local := localization.NewPostgresRepository(s.DB)
 
 			// A zero `since` is the full sweep: every row, no window at all.
@@ -91,7 +91,7 @@ func TestReconcileWindowIgnoresTheSessionTimeZone(t *testing.T) {
 			if _, _, err := flags.UpdateFlagValue(ctx, flagsconfig.FlagValue{ID: 100, Value: "canary", Enabled: 1}); err != nil {
 				t.Fatalf("update flag value: %v", err)
 			}
-			if _, err := micro.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+			if _, err := micro.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 				ID: 200, MicroserviceID: 1, EnvironmentID: 1, SettingsJSON: []byte(`{"log":{"level":"warn"}}`),
 			}); err != nil {
 				t.Fatalf("update appsettings: %v", err)
@@ -135,7 +135,7 @@ func assertReconcileCounts(
 	t *testing.T,
 	ctx context.Context,
 	flags *flagsconfig.PostgresRepository,
-	micro *microconfig.PostgresRepository,
+	micro *servicesettings.PostgresRepository,
 	local *localization.PostgresRepository,
 	since time.Time,
 	wantFlags, wantAppSettings, wantLocalization int,

@@ -173,7 +173,7 @@ func TestRowScopeCoversEnvironmentMove(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	sec := &security{tokens: mustTokens(t, "ci-dev:1|2:devsecret", ""), db: db, sqlite: true}
-	h := sec.guard(classRowMicroConfig, "microconfig", okHandler)
+	h := sec.guard(classRowServiceSettings, "servicesettings", okHandler)
 
 	// Row 200 is in environment 1; the update rewrites ENVIRONMENT_ID.
 	body := `{"id":200,"microserviceId":1,"environmentId":3,"settingsJson":{}}`

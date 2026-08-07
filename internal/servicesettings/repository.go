@@ -1,4 +1,4 @@
-package microconfig
+package servicesettings
 
 import (
 	"context"
@@ -152,7 +152,7 @@ func (r *PostgresRepository) ListAllForReconcile(ctx context.Context, since time
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list microconfig for reconcile: %w", err)
+		return nil, fmt.Errorf("list servicesettings for reconcile: %w", err)
 	}
 	defer rows.Close()
 
@@ -161,7 +161,7 @@ func (r *PostgresRepository) ListAllForReconcile(ctx context.Context, since time
 		var cfg MicroserviceAppSettings
 		var settingsText string
 		if err := rows.Scan(&cfg.ID, &cfg.MicroserviceID, &cfg.EnvironmentID, &settingsText, &cfg.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan microconfig reconcile row: %w", err)
+			return nil, fmt.Errorf("scan servicesettings reconcile row: %w", err)
 		}
 		cfg.SettingsJSON = json.RawMessage(settingsText)
 		out = append(out, cfg)
@@ -216,7 +216,7 @@ func (r *PostgresRepository) ListMicroserviceConfigs(ctx context.Context, filter
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list microconfig: %w", err)
+		return nil, fmt.Errorf("list servicesettings: %w", err)
 	}
 	defer rows.Close()
 
@@ -499,7 +499,7 @@ func scanAppSettings(rows *sql.Rows) ([]MicroserviceAppSettings, error) {
 		var cfg MicroserviceAppSettings
 		var settingsText string
 		if err := rows.Scan(&cfg.ID, &cfg.MicroserviceID, &cfg.EnvironmentID, &settingsText, &cfg.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan microconfig row: %w", err)
+			return nil, fmt.Errorf("scan servicesettings row: %w", err)
 		}
 		cfg.SettingsJSON = json.RawMessage(settingsText)
 		out = append(out, cfg)

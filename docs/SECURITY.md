@@ -112,7 +112,7 @@ The row-lookup case matters. The update handlers key off the row id and ignore
 any `environmentId` in the body, so trusting the body there would let a
 dev-scoped token send `{"id": <prod row>, "environmentId": 1}` and change
 production. The environment is therefore read back from the database before the
-scope check, and a body that disagrees does not win. The microconfig and
+scope check, and a body that disagrees does not win. The servicesettings and
 localization updates additionally *rewrite* `ENVIRONMENT_ID`, so those writes are
 checked against both the environment the row is in and the one it would move to.
 
@@ -437,19 +437,19 @@ NATS accounts are the isolation boundary; within an account, user permissions
 narrow subjects. KV bucket `X` is stream `KV_X` with subjects `$KV.X.>`.
 
 1. **Two accounts.** `CONFIG` owns the three KV buckets (`FLAGS`,
-   `MICROCONFIG`, `LOCALIZATION`) and the JetStream domain. Consumers live in a
+   `SERVICESETTINGS`, `LOCALIZATION`) and the JetStream domain. Consumers live in a
    separate account and reach the buckets through explicit exports/imports, so
    the account boundary — not a subject string — is the default deny.
 
 2. **One writer.** central-config gets the only credential in `CONFIG` with
-   publish rights on `$KV.FLAGS.>`, `$KV.MICROCONFIG.>` and
+   publish rights on `$KV.FLAGS.>`, `$KV.SERVICESETTINGS.>` and
    `$KV.LOCALIZATION.>`. Nothing else in the system may publish to them.
 
 3. **Per-service consumer users, scoped by the key layout.** The keys are already
    shaped for this — `{environmentId}.{flagKey}`,
    `{environmentId}.{microserviceId}`, `{environmentId}.{microserviceId}.{locale}` —
    so a user for `cart-api` (id 2) in environment 3 gets subscribe permission on
-   `$KV.MICROCONFIG.3.2`, `$KV.LOCALIZATION.3.2.*` and `$KV.FLAGS.3.>`, and
+   `$KV.SERVICESETTINGS.3.2`, `$KV.LOCALIZATION.3.2.*` and `$KV.FLAGS.3.>`, and
    publish permission on nothing. Flags stay environment-wide because they are
    not per-service; appsettings and localization become per-service, which is
    what closes the leak.
@@ -461,7 +461,7 @@ narrow subjects. KV bucket `X` is stream `KV_X` with subjects `$KV.X.>`.
                           "$JS.API.CONSUMER.CREATE.>",
                           "$JS.API.DIRECT.GET.>"] }
      subscribe: { allow: ["$KV.FLAGS.3.>",
-                          "$KV.MICROCONFIG.3.2",
+                          "$KV.SERVICESETTINGS.3.2",
                           "$KV.LOCALIZATION.3.2.*",
                           "_INBOX.>"] }
    }

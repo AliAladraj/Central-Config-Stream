@@ -137,7 +137,7 @@ type FlagPayload struct {
 
 type ConfigPublisher interface {
 	PublishFlag(ctx context.Context, environmentID int64, flagKey string, payload FlagPayload) error
-	PublishMicroConfig(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) error
+	PublishServiceSettings(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) error
 	PublishLocalization(ctx context.Context, environmentID, microserviceID int64, locale string, bundle json.RawMessage) error
 
 	// ListKeys returns every key currently held in the named bucket. A bucket
@@ -205,20 +205,20 @@ func (p *Publisher) publishFlag(ctx context.Context, environmentID int64, flagKe
 	})
 }
 
-func (p *Publisher) PublishMicroConfig(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) error {
-	skipped, err := p.publishMicroConfig(ctx, environmentID, microserviceID, settings)
-	return observePublish(BucketMicroConfig, skipped, err)
+func (p *Publisher) PublishServiceSettings(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) error {
+	skipped, err := p.publishServiceSettings(ctx, environmentID, microserviceID, settings)
+	return observePublish(BucketServiceSettings, skipped, err)
 }
 
-func (p *Publisher) publishMicroConfig(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) (bool, error) {
+func (p *Publisher) publishServiceSettings(ctx context.Context, environmentID, microserviceID int64, settings json.RawMessage) (bool, error) {
 	if len(settings) == 0 {
-		return false, fmt.Errorf("messaging: empty microconfig settings")
+		return false, fmt.Errorf("messaging: empty servicesettings settings")
 	}
-	kv, err := p.buckets.byName(BucketMicroConfig)
+	kv, err := p.buckets.byName(BucketServiceSettings)
 	if err != nil {
 		return false, err
 	}
-	return publish(ctx, kv, BucketMicroConfig, MicroKey(environmentID, microserviceID), raw(settings))
+	return publish(ctx, kv, BucketServiceSettings, ServiceSettingsKey(environmentID, microserviceID), raw(settings))
 }
 
 func (p *Publisher) PublishLocalization(ctx context.Context, environmentID, microserviceID int64, locale string, bundle json.RawMessage) error {

@@ -1,5 +1,5 @@
 // Package messaging is the distribution plane: the NATS connection, the
-// JetStream KV buckets (FLAGS, MICROCONFIG, LOCALIZATION), the key layout
+// JetStream KV buckets (FLAGS, SERVICESETTINGS, LOCALIZATION), the key layout
 // consumers watch, the write-through publisher, and the reconciler.
 //
 // Keys are environment-prefixed — "{envID}.…" — so a consumer can watch one

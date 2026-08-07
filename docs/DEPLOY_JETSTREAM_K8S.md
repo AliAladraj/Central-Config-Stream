@@ -103,7 +103,7 @@ publishes to those subjects:
 
 ```
 # central-config (writer) — one credential, and only this one
-publish:   "$KV.FLAGS.>", "$KV.MICROCONFIG.>", "$KV.LOCALIZATION.>",
+publish:   "$KV.FLAGS.>", "$KV.SERVICESETTINGS.>", "$KV.LOCALIZATION.>",
            "$JS.API.>"
 subscribe: "_INBOX.>"
 ```
@@ -126,7 +126,7 @@ so a subject filter narrows a consumer to its own configuration:
 publish:   "$JS.API.STREAM.INFO.*", "$JS.API.CONSUMER.CREATE.>",
            "$JS.API.DIRECT.GET.>"
 subscribe: "$KV.FLAGS.3.>",
-           "$KV.MICROCONFIG.3.2",
+           "$KV.SERVICESETTINGS.3.2",
            "$KV.LOCALIZATION.3.2.*",
            "_INBOX.>"
 ```
@@ -293,7 +293,7 @@ off. A dependency outage should cost you traffic, not your pods.
 ## 6. Buckets (auto-created on startup)
 
 `central-config` calls `CreateOrUpdateKeyValue` on boot, so `FLAGS`,
-`MICROCONFIG` and `LOCALIZATION` are created idempotently with
+`SERVICESETTINGS` and `LOCALIZATION` are created idempotently with
 `History=5`, file storage, `Replicas=NATS_REPLICAS` and a **512 KiB
 `MaxValueSize`**. No manual step.
 
@@ -319,9 +319,9 @@ nats --server nats://localhost:4222 kv info FLAGS
 To create them manually (e.g. to pre-provision before first deploy):
 
 ```bash
-nats kv add FLAGS        --history=5 --storage=file --replicas=3 --max-value-size=524288
-nats kv add MICROCONFIG  --history=5 --storage=file --replicas=3 --max-value-size=524288
-nats kv add LOCALIZATION --history=5 --storage=file --replicas=3 --max-value-size=524288
+nats kv add FLAGS           --history=5 --storage=file --replicas=3 --max-value-size=524288
+nats kv add SERVICESETTINGS --history=5 --storage=file --replicas=3 --max-value-size=524288
+nats kv add LOCALIZATION    --history=5 --storage=file --replicas=3 --max-value-size=524288
 ```
 
 ---
@@ -342,7 +342,7 @@ if err != nil { log.Fatal(err) }
 defer cc.Close()
 
 if cc.FlagEnabled("search_v2") { /* ... */ }
-settings, _ := cc.MicroSettings(1)
+settings, _ := cc.ServiceSettings(1)
 title, _ := cc.Translate(1, "pt-BR", "catalog.title")
 ```
 

@@ -262,7 +262,7 @@ comparable amount in them, so there is no thinner one to match by accident:
 | Package | What exists |
 |---|---|
 | `internal/flagsconfig` | service, handler and SQLite repository tests |
-| `internal/microconfig` | service, handler and SQLite repository tests |
+| `internal/servicesettings` | service, handler and SQLite repository tests |
 | `internal/localization` | service, handler and SQLite repository tests |
 | `internal/pgintegration` | all three PostgreSQL repositories and the audit store against a live server, plus one end-to-end case driving the whole service over it |
 | `internal/app` | auth and scope middleware, read scoping, rate limiting, audit, liveness, observability, reconcile partial/prune, end-to-end stack |

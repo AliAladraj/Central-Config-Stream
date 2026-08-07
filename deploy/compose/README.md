@@ -118,7 +118,7 @@ curl -s http://localhost:8090/api/state | jq '.flags.dark_mode'
 Note the type change — `"enabled": 1` on the API, `"enabled": true` in KV.
 
 **2. Update appsettings.** Rows 200 and 201 are both env 1, so both land in the
-console under `MICROCONFIG` keys `1.1` and `1.2`. Edit them in the Appsettings
+console under `SERVICESETTINGS` keys `1.1` and `1.2`. Edit them in the Appsettings
 view, or:
 
 ```bash

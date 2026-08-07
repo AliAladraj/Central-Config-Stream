@@ -50,7 +50,7 @@ function JsonRow({ label, kvRest, value, envId }) {
 export function CachePanel({ snapshot }) {
   const envId = snapshot.environmentId ?? '?'
   const flags = Object.entries(snapshot.flags).sort(([a], [b]) => a.localeCompare(b))
-  const micro = Object.entries(snapshot.micro).sort(([a], [b]) => a.localeCompare(b))
+  const micro = Object.entries(snapshot.serviceSettings).sort(([a], [b]) => a.localeCompare(b))
   const loc = Object.entries(snapshot.localization).flatMap(([msID, bundles]) =>
     Object.entries(bundles).map(([locale, bundle]) => [`${msID}.${locale}`, bundle]))
 
@@ -69,7 +69,7 @@ export function CachePanel({ snapshot }) {
       </div>
 
       <div>
-        <div className="hint">MICROCONFIG · {micro.length}</div>
+        <div className="hint">SERVICESETTINGS · {micro.length}</div>
         <table className="kv">
           <thead><tr><th>service / kv key</th><th>settings</th></tr></thead>
           <tbody>

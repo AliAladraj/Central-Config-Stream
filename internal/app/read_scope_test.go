@@ -230,14 +230,14 @@ func TestInventoryPages(t *testing.T) {
 	}
 
 	all := decode("")
-	if len(all.Flags) < 2 || len(all.MicroConfigs) < 2 || len(all.Localization) < 2 {
+	if len(all.Flags) < 2 || len(all.ServiceSettings) < 2 || len(all.Localization) < 2 {
 		t.Fatalf("fixture is too small to page: %+v", all)
 	}
 
 	first := decode("?limit=1")
-	if len(first.Flags) != 1 || len(first.MicroConfigs) != 1 || len(first.Localization) != 1 {
+	if len(first.Flags) != 1 || len(first.ServiceSettings) != 1 || len(first.Localization) != 1 {
 		t.Fatalf("?limit=1 returned %d/%d/%d rows, want one of each",
-			len(first.Flags), len(first.MicroConfigs), len(first.Localization))
+			len(first.Flags), len(first.ServiceSettings), len(first.Localization))
 	}
 
 	second := decode("?limit=1&offset=1")

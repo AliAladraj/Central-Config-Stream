@@ -31,8 +31,8 @@ func (p *rejectingPublisher) PublishFlag(_ context.Context, environmentID int64,
 	return nil
 }
 
-func (p *rejectingPublisher) PublishMicroConfig(_ context.Context, environmentID, microserviceID int64, _ json.RawMessage) error {
-	key := messaging.MicroKey(environmentID, microserviceID)
+func (p *rejectingPublisher) PublishServiceSettings(_ context.Context, environmentID, microserviceID int64, _ json.RawMessage) error {
+	key := messaging.ServiceSettingsKey(environmentID, microserviceID)
 	if key == p.reject {
 		return errors.New("maximum value size exceeded")
 	}

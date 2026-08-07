@@ -46,7 +46,7 @@ the fix is.
 | Domain | Package | Status |
 |---|---|---|
 | Feature flags | `internal/flagsconfig` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
-| Appsettings | `internal/microconfig` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
+| Appsettings | `internal/servicesettings` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
 | Localization | `internal/localization` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
 
 **Appsettings and localization updates run the same validation and referential
@@ -72,7 +72,7 @@ the environment.
 ### 2.2 Distribution
 
 - `internal/messaging` — NATS client, idempotent bucket provisioning
-  (`FLAGS` / `MICROCONFIG` / `LOCALIZATION`, history depth 5), key builders,
+  (`FLAGS` / `SERVICESETTINGS` / `LOCALIZATION`, history depth 5), key builders,
   publisher (plus a no-op for tests and for running with distribution off),
   and the reconciler.
 - Write-through is database first, KV second. A KV failure is logged and

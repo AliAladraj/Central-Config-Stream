@@ -191,7 +191,7 @@ func normalizePage(p Page) Page {
 const maxListLimit = 500
 
 // checkValue bounds what may be written to VALUE. The ceiling here is the
-// column rather than messaging.MaxValueSize, the way microconfig and
+// column rather than messaging.MaxValueSize, the way servicesettings and
 // localization check theirs: those carry a TEXT document whose only limit is
 // what a KV value may hold, while VARCHAR(4000) is three orders of magnitude
 // tighter, so the database is what a caller hits first. Left to the column an

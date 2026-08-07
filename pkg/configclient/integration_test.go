@@ -45,7 +45,7 @@ func TestEndToEnd(t *testing.T) {
 	if err := pub.PublishFlag(ctx, env, "search_v2", messaging.FlagPayload{Enabled: true, Value: "on"}); err != nil {
 		t.Fatalf("publish flag: %v", err)
 	}
-	if err := pub.PublishMicroConfig(ctx, env, 2, json.RawMessage(`{"timeout":30}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, env, 2, json.RawMessage(`{"timeout":30}`)); err != nil {
 		t.Fatalf("publish micro: %v", err)
 	}
 	if err := pub.PublishLocalization(ctx, env, 2, "pt-BR", json.RawMessage(`{"catalog.title":"Catálogo"}`)); err != nil {
@@ -65,7 +65,7 @@ func TestEndToEnd(t *testing.T) {
 	if v, ok := cc.FlagValue("search_v2"); !ok || v != "on" {
 		t.Errorf("flag value = %q, %v", v, ok)
 	}
-	if s, ok := cc.MicroSettings(2); !ok || string(s) != `{"timeout":30}` {
+	if s, ok := cc.ServiceSettings(2); !ok || string(s) != `{"timeout":30}` {
 		t.Errorf("micro settings = %s, %v", s, ok)
 	}
 	if tr, ok := cc.Translate(2, "pt-BR", "catalog.title"); !ok || tr != "Catálogo" {

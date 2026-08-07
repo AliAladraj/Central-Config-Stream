@@ -37,7 +37,7 @@ func (c *capturePublisher) PublishFlag(context.Context, int64, string, FlagPaylo
 	c.flags++
 	return nil
 }
-func (c *capturePublisher) PublishMicroConfig(context.Context, int64, int64, json.RawMessage) error {
+func (c *capturePublisher) PublishServiceSettings(context.Context, int64, int64, json.RawMessage) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.micro++
@@ -332,7 +332,7 @@ func (s *keySource) Resync(_ context.Context, _ ConfigPublisher, _ time.Time) (R
 func TestPartialSweepDoesNotStrandTheRestOrOtherSources(t *testing.T) {
 	pub := newCapturePublisher()
 	pub.seed(BucketFlags, "1.a", "1.bad", "1.c")
-	pub.seed(BucketMicroConfig, "1.1", "1.gone")
+	pub.seed(BucketServiceSettings, "1.1", "1.gone")
 
 	bad := &keySource{
 		name:   "flags",
@@ -340,7 +340,7 @@ func TestPartialSweepDoesNotStrandTheRestOrOtherSources(t *testing.T) {
 		keys:   []string{"1.a", "1.bad", "1.c"},
 		fail:   map[string]error{"1.bad": errors.New("value too large")},
 	}
-	good := &keySource{name: "microconfig", bucket: BucketMicroConfig, keys: []string{"1.1"}}
+	good := &keySource{name: "servicesettings", bucket: BucketServiceSettings, keys: []string{"1.1"}}
 
 	rec := NewReconciler(time.Hour, pub, bad, good)
 	rec.runOnce(context.Background())
@@ -366,7 +366,7 @@ func TestPartialSweepDoesNotStrandTheRestOrOtherSources(t *testing.T) {
 
 	// The source that completed still pruned, rather than being held back by
 	// the other one's failure.
-	if pub.has(BucketMicroConfig, "1.gone") {
+	if pub.has(BucketServiceSettings, "1.gone") {
 		t.Error("a healthy source did not prune because another source was partial")
 	}
 }

@@ -6,13 +6,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
-func microRepo(t *testing.T, opts ...stackOption) (*microconfig.PostgresRepository, *stack) {
+func microRepo(t *testing.T, opts ...stackOption) (*servicesettings.PostgresRepository, *stack) {
 	t.Helper()
 	s := newStack(t, opts...)
-	return microconfig.NewPostgresRepository(s.DB), s
+	return servicesettings.NewPostgresRepository(s.DB), s
 }
 
 func TestAppSettingsCreateReadAndList(t *testing.T) {
@@ -20,7 +20,7 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 	ctx := context.Background()
 
 	doc := json.RawMessage(`{"service":{"displayName":"Catalog (staging)"},"http":{"timeoutMs":2500}}`)
-	created, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	created, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 1, EnvironmentID: 2, SettingsJSON: doc,
 	})
 	if err != nil {
@@ -37,27 +37,27 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 	if string(read.SettingsJSON) != string(doc) {
 		t.Fatalf("read back %q, wrote %q", read.SettingsJSON, doc)
 	}
-	if _, err := repo.GetMicroserviceConfigByID(ctx, 999999); !errors.Is(err, microconfig.ErrConfigNotFound) {
+	if _, err := repo.GetMicroserviceConfigByID(ctx, 999999); !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("read of a missing row: expected ErrConfigNotFound, got %v", err)
 	}
 
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 1, EnvironmentID: 2, SettingsJSON: doc,
-	}); !errors.Is(err, microconfig.ErrConfigExists) {
+	}); !errors.Is(err, servicesettings.ErrConfigExists) {
 		t.Fatalf("duplicate natural key: expected ErrConfigExists, got %v", err)
 	}
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 999, EnvironmentID: 2, SettingsJSON: doc,
-	}); !errors.Is(err, microconfig.ErrMicroserviceNotFound) {
+	}); !errors.Is(err, servicesettings.ErrMicroserviceNotFound) {
 		t.Fatalf("missing microservice: expected ErrMicroserviceNotFound, got %v", err)
 	}
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 1, EnvironmentID: 999, SettingsJSON: doc,
-	}); !errors.Is(err, microconfig.ErrEnvironmentNotFound) {
+	}); !errors.Is(err, servicesettings.ErrEnvironmentNotFound) {
 		t.Fatalf("missing environment: expected ErrEnvironmentNotFound, got %v", err)
 	}
 
-	all, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{Page: microconfig.Page{Limit: 100}})
+	all, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{Page: servicesettings.Page{Limit: 100}})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -65,8 +65,8 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 		t.Fatalf("expected 4 rows, got %d", len(all))
 	}
 
-	byService, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 100}, MicroserviceID: 1,
+	byService, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 100}, MicroserviceID: 1,
 	})
 	if err != nil {
 		t.Fatalf("list by microservice: %v", err)
@@ -75,8 +75,8 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 		t.Fatalf("expected 2 rows for microservice 1, got %d", len(byService))
 	}
 
-	byEnv, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 100}, EnvironmentID: 1,
+	byEnv, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 100}, EnvironmentID: 1,
 	})
 	if err != nil {
 		t.Fatalf("list by environment: %v", err)
@@ -87,8 +87,8 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 
 	// Both filters plus paging: MICROSERVICE_ID binds $1, ENVIRONMENT_ID $2, and
 	// the LIMIT/OFFSET $3 and $4.
-	both, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 100}, MicroserviceID: 1, EnvironmentID: 2,
+	both, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 100}, MicroserviceID: 1, EnvironmentID: 2,
 	})
 	if err != nil {
 		t.Fatalf("list by microservice and environment: %v", err)
@@ -97,7 +97,7 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 		t.Fatalf("unexpected rows for (service 1, env 2): %+v", both)
 	}
 
-	page, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{Page: microconfig.Page{Limit: 2, Offset: 1}})
+	page, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{Page: servicesettings.Page{Limit: 2, Offset: 1}})
 	if err != nil {
 		t.Fatalf("list page: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestAppSettingsCreateReadAndList(t *testing.T) {
 	if removed.MicroserviceID != 1 || removed.EnvironmentID != 2 {
 		t.Fatalf("delete reported the wrong KV coordinates: %+v", removed)
 	}
-	if _, err := repo.DeleteMicroserviceConfig(ctx, created.ID); !errors.Is(err, microconfig.ErrConfigNotFound) {
+	if _, err := repo.DeleteMicroserviceConfig(ctx, created.ID); !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("second delete: expected ErrConfigNotFound, got %v", err)
 	}
 }
@@ -127,7 +127,7 @@ func TestAppSettingsGuardedUpdate(t *testing.T) {
 	}
 
 	expected := current.UpdatedAt
-	updated, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	updated, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 1,
 		SettingsJSON:      json.RawMessage(`{"log":{"level":"warn"}}`),
 		ExpectedUpdatedAt: &expected,
@@ -140,31 +140,31 @@ func TestAppSettingsGuardedUpdate(t *testing.T) {
 	}
 
 	stale := expected
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 1,
 		SettingsJSON:      json.RawMessage(`{"log":{"level":"error"}}`),
 		ExpectedUpdatedAt: &stale,
-	}); !errors.Is(err, microconfig.ErrConflict) {
+	}); !errors.Is(err, servicesettings.ErrConflict) {
 		t.Fatalf("stale guard: expected ErrConflict, got %v", err)
 	}
 
 	// A guard on a row that is not there stays a not-found. The distinction is
 	// the whole reason the repository re-reads the row after a zero-row UPDATE.
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 999999, MicroserviceID: 2, EnvironmentID: 2,
 		SettingsJSON:      json.RawMessage(`{}`),
 		ExpectedUpdatedAt: &stale,
-	}); !errors.Is(err, microconfig.ErrConfigNotFound) {
+	}); !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("guarded update of a missing row: expected ErrConfigNotFound, got %v", err)
 	}
 
 	// An update rewrites the natural key, so it carries the create's checks:
 	// moving row 200 onto row 201's (microservice, environment) is a conflict
 	// and not a constraint violation surfacing as a 500.
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 2, EnvironmentID: 1,
 		SettingsJSON: json.RawMessage(`{}`),
-	}); !errors.Is(err, microconfig.ErrConfigExists) {
+	}); !errors.Is(err, servicesettings.ErrConfigExists) {
 		t.Fatalf("update onto another row's key: expected ErrConfigExists, got %v", err)
 	}
 }
@@ -178,9 +178,9 @@ func TestAppSettingsCreateLosingARaceIsAConflict(t *testing.T) {
 		"NEW.MICROSERVICE_ID = 1 AND NEW.ENVIRONMENT_ID = 3",
 		`INSERT INTO CONFIG_MICROSERVICE_APPSETTINGS (MICROSERVICE_ID, ENVIRONMENT_ID, SETTINGS_JSON) VALUES (1, 3, '{"theirs":true}')`)
 
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 1, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{"mine":true}`),
-	}); !errors.Is(err, microconfig.ErrConfigExists) {
+	}); !errors.Is(err, servicesettings.ErrConfigExists) {
 		t.Fatalf("lost create of an appsettings row: expected ErrConfigExists, got %v", err)
 	}
 }
@@ -196,13 +196,13 @@ func TestReferenceTablesCreateAndList(t *testing.T) {
 	if svc.ID <= 3 || svc.Microservice != "billing-api" {
 		t.Fatalf("unexpected microservice: %+v", svc)
 	}
-	if _, err := repo.CreateMicroservice(ctx, "billing-api"); !errors.Is(err, microconfig.ErrMicroserviceExists) {
+	if _, err := repo.CreateMicroservice(ctx, "billing-api"); !errors.Is(err, servicesettings.ErrMicroserviceExists) {
 		t.Fatalf("duplicate microservice: expected ErrMicroserviceExists, got %v", err)
 	}
 	if read, err := repo.GetMicroserviceByID(ctx, svc.ID); err != nil || read.Microservice != "billing-api" {
 		t.Fatalf("read back microservice: %+v %v", read, err)
 	}
-	if _, err := repo.GetMicroserviceByID(ctx, 999999); !errors.Is(err, microconfig.ErrMicroserviceNotFound) {
+	if _, err := repo.GetMicroserviceByID(ctx, 999999); !errors.Is(err, servicesettings.ErrMicroserviceNotFound) {
 		t.Fatalf("missing microservice: expected ErrMicroserviceNotFound, got %v", err)
 	}
 
@@ -210,11 +210,11 @@ func TestReferenceTablesCreateAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create environment: %v", err)
 	}
-	if _, err := repo.CreateEnvironment(ctx, "canary"); !errors.Is(err, microconfig.ErrEnvironmentExists) {
+	if _, err := repo.CreateEnvironment(ctx, "canary"); !errors.Is(err, servicesettings.ErrEnvironmentExists) {
 		t.Fatalf("duplicate environment: expected ErrEnvironmentExists, got %v", err)
 	}
 
-	services, err := repo.ListMicroservices(ctx, microconfig.Page{Limit: 2, Offset: 2})
+	services, err := repo.ListMicroservices(ctx, servicesettings.Page{Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatalf("list microservices: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestReferenceTablesCreateAndList(t *testing.T) {
 		t.Fatalf("unexpected microservice page: %+v", services)
 	}
 
-	envs, err := repo.ListEnvironments(ctx, microconfig.Page{Limit: 2, Offset: 2})
+	envs, err := repo.ListEnvironments(ctx, servicesettings.Page{Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatalf("list environments: %v", err)
 	}
@@ -239,10 +239,10 @@ func TestReferenceTablesCreateAndList(t *testing.T) {
 	if err := repo.DeleteEnvironment(ctx, env.ID); err != nil {
 		t.Fatalf("delete unreferenced environment: %v", err)
 	}
-	if err := repo.DeleteMicroservice(ctx, svc.ID); !errors.Is(err, microconfig.ErrMicroserviceNotFound) {
+	if err := repo.DeleteMicroservice(ctx, svc.ID); !errors.Is(err, servicesettings.ErrMicroserviceNotFound) {
 		t.Fatalf("second delete: expected ErrMicroserviceNotFound, got %v", err)
 	}
-	if err := repo.DeleteEnvironment(ctx, env.ID); !errors.Is(err, microconfig.ErrEnvironmentNotFound) {
+	if err := repo.DeleteEnvironment(ctx, env.ID); !errors.Is(err, servicesettings.ErrEnvironmentNotFound) {
 		t.Fatalf("second delete: expected ErrEnvironmentNotFound, got %v", err)
 	}
 }
@@ -256,21 +256,21 @@ func TestDeleteEnvironmentRefusesWhileReferenced(t *testing.T) {
 	repo, s := microRepo(t)
 	ctx := context.Background()
 
-	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, microconfig.ErrEnvironmentInUse) {
+	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, servicesettings.ErrEnvironmentInUse) {
 		t.Fatalf("environment 1 is referenced by all three domains: expected ErrEnvironmentInUse, got %v", err)
 	}
 
 	if _, err := s.DB.ExecContext(ctx, `DELETE FROM CONFIG_FLAG_VALUE WHERE ENVIRONMENT_ID = 1`); err != nil {
 		t.Fatalf("clear flag values: %v", err)
 	}
-	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, microconfig.ErrEnvironmentInUse) {
+	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, servicesettings.ErrEnvironmentInUse) {
 		t.Fatalf("appsettings still reference environment 1: expected ErrEnvironmentInUse, got %v", err)
 	}
 
 	if _, err := s.DB.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE ENVIRONMENT_ID = 1`); err != nil {
 		t.Fatalf("clear appsettings: %v", err)
 	}
-	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, microconfig.ErrEnvironmentInUse) {
+	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, servicesettings.ErrEnvironmentInUse) {
 		t.Fatalf("localization still references environment 1: expected ErrEnvironmentInUse, got %v", err)
 	}
 
@@ -288,14 +288,14 @@ func TestDeleteMicroserviceRefusesWhileReferenced(t *testing.T) {
 
 	// Microservice 1 (catalog-api) is referenced by appsettings 200 and by both
 	// localization bundles.
-	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, microconfig.ErrMicroserviceInUse) {
+	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, servicesettings.ErrMicroserviceInUse) {
 		t.Fatalf("expected ErrMicroserviceInUse, got %v", err)
 	}
 
 	if _, err := s.DB.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE MICROSERVICE_ID = 1`); err != nil {
 		t.Fatalf("clear appsettings: %v", err)
 	}
-	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, microconfig.ErrMicroserviceInUse) {
+	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, servicesettings.ErrMicroserviceInUse) {
 		t.Fatalf("localization still references microservice 1: expected ErrMicroserviceInUse, got %v", err)
 	}
 

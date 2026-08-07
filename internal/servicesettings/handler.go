@@ -1,4 +1,4 @@
-package microconfig
+package servicesettings
 
 import (
 	"errors"

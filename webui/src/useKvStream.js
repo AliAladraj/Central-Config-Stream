@@ -85,7 +85,7 @@ function normalize(s) {
 
 // applyEvent mirrors the consumer-side key layout:
 //   FLAGS         {env}.{flagKey}
-//   MICROCONFIG   {env}.{microserviceID}
+//   SERVICESETTINGS   {env}.{microserviceID}
 //   LOCALIZATION  {env}.{microserviceID}.{locale}
 function applyEvent(prev, e) {
   const rest = stripEnv(e.key, prev.environmentId)
@@ -98,7 +98,7 @@ function applyEvent(prev, e) {
     return { ...prev, flags }
   }
 
-  if (e.bucket === 'MICROCONFIG') {
+  if (e.bucket === 'SERVICESETTINGS') {
     const micro = { ...prev.micro }
     if (deleted) delete micro[rest]
     else micro[rest] = e.value

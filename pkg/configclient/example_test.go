@@ -31,7 +31,7 @@ func ExampleNew() {
 	defer client.Close()
 
 	fmt.Println("search_v2:", client.FlagEnabled("search_v2"))
-	if settings, ok := client.MicroSettings(1); ok {
+	if settings, ok := client.ServiceSettings(1); ok {
 		fmt.Println("appsettings:", string(settings))
 	}
 	if title, ok := client.Translate(1, "pt-BR", "catalog.title"); ok {

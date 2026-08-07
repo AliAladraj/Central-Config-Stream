@@ -14,7 +14,7 @@ func (NoopPublisher) PublishFlag(context.Context, int64, string, FlagPayload) er
 	return nil
 }
 
-func (NoopPublisher) PublishMicroConfig(context.Context, int64, int64, json.RawMessage) error {
+func (NoopPublisher) PublishServiceSettings(context.Context, int64, int64, json.RawMessage) error {
 	return nil
 }
 

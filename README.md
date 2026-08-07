@@ -46,7 +46,7 @@ flowchart LR
     end
 
     cc -->|1. write, source of truth| pg[(PostgreSQL)]
-    cc -->|2. write-through| kv[(JetStream KV<br/>FLAGS · MICROCONFIG · LOCALIZATION)]
+    cc -->|2. write-through| kv[(JetStream KV<br/>FLAGS · SERVICESETTINGS · LOCALIZATION)]
     rec -.->|periodic resync, heals drift| kv
     pg -.-> rec
     kv -->|watch| s1[Service A<br/>in-memory cache]
@@ -149,7 +149,7 @@ plus three things the API alone can't show you:
 - **Measured latency.** Each write is timed to the KV push that follows;
   `last push +NNms` in the header is the number that makes "realtime" concrete.
 
-![The Flags view: an environment × flag matrix with dev, staging and prod across the top, a filled cell wherever a flag value row exists and an add button where none does, beside the consumer's cached FLAGS, MICROCONFIG and LOCALIZATION values.](docs/assets/console-flags-matrix.png)
+![The Flags view: an environment × flag matrix with dev, staging and prod across the top, a filled cell wherever a flag value row exists and an add button where none does, beside the consumer's cached FLAGS, SERVICESETTINGS and LOCALIZATION values.](docs/assets/console-flags-matrix.png)
 
 Security, short version: the console proxies admin calls so the browser never
 holds the token, binds to `127.0.0.1` by default and warns loudly when it
@@ -174,7 +174,7 @@ if err != nil {
 defer c.Close() // check err first — on failure c is nil and Close panics
 
 if c.FlagEnabled("search_v2") { ... }
-raw, ok := c.MicroSettings(1)
+raw, ok := c.ServiceSettings(1)
 text, ok := c.Translate(1, "pt-BR", "catalog.title")
 ```
 
@@ -194,7 +194,7 @@ Three buckets, keys scoped by environment so a consumer can watch one prefix:
 | bucket | key | value |
 |---|---|---|
 | `FLAGS` | `{envId}.{flagKey}` | `{"enabled": true, "value": "0.25", "updatedAt": "..."}` |
-| `MICROCONFIG` | `{envId}.{microserviceId}` | the whole appsettings tree as one JSON document — one push replaces it atomically |
+| `SERVICESETTINGS` | `{envId}.{microserviceId}` | the whole appsettings tree as one JSON document — one push replaces it atomically |
 | `LOCALIZATION` | `{envId}.{microserviceId}.{locale}` | one JSON object per locale |
 
 Each key keeps five historical values (the rollback depth) and a value may not
@@ -303,10 +303,12 @@ contract to integrate, then security and production readiness before deploying.
 | [`CHANGELOG.md`](CHANGELOG.md) | what each release changed |
 
 > Naming, once: the repository is `Central-Config-Stream`; the project, module
-> path, binary and compose service are all `central-config`. And the
-> per-service JSON tree is called **appsettings** in prose, `/configs` on the
-> API, `MICROCONFIG` in KV and `MicroSettings()` on the client — all the same
-> thing.
+> path, binary and compose service are all `central-config`. The per-service
+> JSON tree is **service settings** — `SERVICESETTINGS` in KV,
+> `ServiceSettings()` on the client, `internal/servicesettings` in the source.
+> Two older names for it survive where changing them would break callers for no
+> gain: the route is still `/configs`, and the request field is still
+> `settingsJson`.
 
 ## Known limitations
 

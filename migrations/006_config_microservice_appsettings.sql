@@ -1,7 +1,7 @@
 -- central-config: per-service appsettings (PostgreSQL).
 -- One configuration tree per (microservice, environment), stored
 -- whole so a consumer binds a locale-free settings object atomically. It is
--- published verbatim as the MICROCONFIG KV value, which is why the API refuses
+-- published verbatim as the SERVICESETTINGS KV value, which is why the API refuses
 -- anything that is not a top-level JSON object.
 --
 -- SETTINGS_JSON is TEXT and not JSONB, for the same reason BUNDLE_JSON is in

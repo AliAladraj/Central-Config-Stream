@@ -41,7 +41,7 @@ prefix and receive only what belongs to its environment.
 | bucket | key format | example |
 |---|---|---|
 | `FLAGS` | `{environmentId}.{flagKey}` | `1.search_v2` |
-| `MICROCONFIG` | `{environmentId}.{microserviceId}` | `1.1` |
+| `SERVICESETTINGS` | `{environmentId}.{microserviceId}` | `1.1` |
 | `LOCALIZATION` | `{environmentId}.{microserviceId}.{locale}` | `1.1.en-US` |
 
 `environmentId` and `microserviceId` are row ids from the control plane's
@@ -53,12 +53,12 @@ hardcoding them.
 **Watch the narrowest prefix you need**, one watcher per bucket:
 
 ```
-FLAGS         "{env}.>"                 flags are shared across services
-MICROCONFIG   "{env}.{microserviceId}"  exactly one key — your own settings
-LOCALIZATION  "{env}.{microserviceId}.>"
+FLAGS            "{env}.>"                  flags are shared across services
+SERVICESETTINGS  "{env}.{microserviceId}"   exactly one key — your own settings
+LOCALIZATION     "{env}.{microserviceId}.>"
 ```
 
-Do not watch `{env}.>` on `MICROCONFIG`. That caches every other service's
+Do not watch `{env}.>` on `SERVICESETTINGS`. That caches every other service's
 configuration in your process, for no benefit — and see §5 on why holding other
 services' settings is something to avoid deliberately.
 
@@ -75,7 +75,7 @@ like rollout percentages or variant names; parse it yourself when a flag carries
 more than on/off. `updatedAt` is RFC 3339 and is useful for the ordering guard
 in §3.
 
-`MICROCONFIG` is **the entire appsettings tree as one JSON document** — not one
+`SERVICESETTINGS` is **the entire appsettings tree as one JSON document** — not one
 key per setting. One push replaces the whole document atomically, so a consumer
 can never observe half an update. The shape of that tree is entirely yours; the
 control plane treats it as opaque JSON.
@@ -400,7 +400,7 @@ passes 1, 2 and 6 but not 5 will look perfect until the first NATS restart.
 - The watch callback is idempotent; side effects are gated on a value change.
 - Deletes remove keys rather than blanking them.
 - No secret value appears in any KV key, log line, or exception message.
-- Only this service's own `MICROCONFIG` key is watched, not the whole bucket.
+- Only this service's own `SERVICESETTINGS` key is watched, not the whole bucket.
 - No appsettings tree or bundle is anywhere near 512 KiB.
 - If an HTTP bootstrap fallback is configured, it carries a bearer token scoped
   to this environment, is validated at start, and runs once — never on a read.

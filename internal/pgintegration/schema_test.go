@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
 // The migrations are applied by every test in this package, so a file that no
@@ -106,7 +106,7 @@ func TestSeedDoesNotStrandTheIdentitySequences(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
 
-	env, err := microconfig.NewPostgresRepository(s.DB).CreateEnvironment(ctx, "sandbox")
+	env, err := servicesettings.NewPostgresRepository(s.DB).CreateEnvironment(ctx, "sandbox")
 	if err != nil {
 		t.Fatalf("create environment: %v", err)
 	}

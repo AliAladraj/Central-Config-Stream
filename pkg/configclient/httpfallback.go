@@ -61,7 +61,7 @@ type HTTPFallback struct {
 	HTTPClient *http.Client
 
 	// ConfigValueID is the /configs/values/{id} row id holding this service's
-	// appsettings. Required to fall back for MICROCONFIG.
+	// appsettings. Required to fall back for SERVICESETTINGS.
 	ConfigValueID int64
 
 	// FlagValueIDs maps flag key -> /flags/values/{id} row id, for the flags
@@ -207,7 +207,7 @@ func (f *HTTPFallback) hydrate(ctx context.Context, c *Client) error {
 		ok(f.fetchFlag(ctx, c, flagKey, id))
 	}
 	if f.ConfigValueID > 0 {
-		if _, cached := c.MicroSettings(c.msID); !cached || c.msID == 0 {
+		if _, cached := c.ServiceSettings(c.msID); !cached || c.msID == 0 {
 			ok(f.fetchConfig(ctx, c))
 		}
 	}

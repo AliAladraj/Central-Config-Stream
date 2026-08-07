@@ -10,9 +10,10 @@
 // deploy/compose for how it is wired up alongside central-config.
 //
 // The proxy carries a full-scope admin token, so this process is as powerful as
-// the token it is given. It therefore binds to loopback, refuses cross-origin
-// requests, and forwards only JSON to an explicit list of API paths — a page in
-// another tab must not be able to reach through it.
+// the token it is given. It therefore binds to loopback, answers only to the
+// hosts it was configured to be reachable as, refuses cross-origin requests, and
+// forwards only JSON to an explicit list of API paths — a page in another tab
+// must not be able to reach through it.
 package main
 
 import (
@@ -63,6 +64,11 @@ const (
 	// Retries back off so a five minute wait is not five minutes of log.
 	connectWait    = time.Second
 	connectMaxWait = 15 * time.Second
+
+	// defaultBindAddr is where both the HTTP console and the embedded NATS
+	// server go when BIND_ADDR says nothing. Neither authenticates anything, so
+	// the default has to be the interface nobody else can reach.
+	defaultBindAddr = "127.0.0.1"
 )
 
 // proxiedPaths is the set of central-config path prefixes the console will
@@ -160,19 +166,28 @@ func run() error {
 	defer stop()
 
 	var (
-		natsURL  = env("NATS_URL", "nats://localhost:4222")
-		envID    = envInt("ENVIRONMENT_ID", 1)
-		apiURL   = env("CENTRAL_CONFIG_URL", "http://localhost:8080")
+		natsURL = env("NATS_URL", "nats://localhost:4222")
+		envID   = envInt("ENVIRONMENT_ID", 1)
+		apiURL  = env("CENTRAL_CONFIG_URL", "http://localhost:8080")
+		// BIND_ADDR is read raw rather than through env's fallback, because
+		// "unset" and "set to loopback" have to stay distinguishable: an unset
+		// BIND_ADDR never widens anything, and the embedded NATS server below
+		// binds where it says only when it says something.
+		bindAddr = strings.TrimSpace(os.Getenv("BIND_ADDR"))
 		adminTok = env("ADMIN_TOKEN", "")
 		webDir   = env("WEB_DIR", "web")
-		listen   = listenAddr(env("PORT", "8090"), env("BIND_ADDR", "127.0.0.1"))
+		listen   = listenAddr(env("PORT", "8090"), bindAddr)
 	)
 
 	// NATS_EMBEDDED=true runs a JetStream server in this process, so the whole
 	// stack can be exercised without Docker. The compose stack leaves it off
 	// and uses the real nats container instead.
 	if envBool("NATS_EMBEDDED", false) {
-		srv, storeDir, err := startEmbeddedNATS(natsURL)
+		// The embedded server follows the console's own BIND_ADDR: one variable
+		// decides how far this process reaches, rather than the NATS half
+		// quietly reaching further than the HTTP half.
+		natsHost := bindHost(bindAddr)
+		srv, storeDir, err := startEmbeddedNATS(natsURL, natsHost)
 		if err != nil {
 			return fmt.Errorf("embedded nats: %w", err)
 		}
@@ -186,6 +201,13 @@ func run() error {
 			}
 		}()
 		log.Printf("testconsole: embedded JetStream server listening on %s", srv.ClientURL())
+		// The embedded server has no authentication at all, and JetStream KV is
+		// writable: anyone who can reach it can forge the entries every consumer
+		// caches. Off loopback that is worth the same shout as the console port.
+		if !isLoopbackHost(natsHost) {
+			log.Printf("testconsole: WARNING: the embedded NATS server is on %s, not loopback, and has no "+
+				"authentication — anyone who can reach it can read and write every KV bucket.", natsHost)
+		}
 	}
 
 	h := newHub()
@@ -203,10 +225,18 @@ func run() error {
 		},
 	}
 
+	// The names this console answers to: where it is bound, plus anything
+	// ALLOWED_ORIGINS or ALLOWED_HOSTS adds. Loopback is always in, and a
+	// wildcard bind contributes nothing, because "every interface" is not a name
+	// a request can be checked against.
+	allowedOrigins := envList("ALLOWED_ORIGINS")
+	hosts := newHostPolicy(append(append([]string{listen}, allowedOrigins...), envList("ALLOWED_HOSTS")...)...)
+
 	proxy := &adminProxy{
 		baseURL:        strings.TrimSuffix(apiURL, "/"),
 		token:          adminTok,
-		allowedOrigins: envList("ALLOWED_ORIGINS"),
+		allowedOrigins: allowedOrigins,
+		hosts:          hosts,
 		// One client, so proxied calls share a connection pool instead of
 		// opening a fresh transport per request.
 		client: &http.Client{Timeout: 15 * time.Second},
@@ -214,8 +244,11 @@ func run() error {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /", webHandler(webDir))
-	mux.HandleFunc("GET /api/state", cons.stateHandler)
-	mux.HandleFunc("GET /api/events", sseHandler(h))
+	// Both of these hand over the consumer's entire cache, so they are guarded
+	// like the proxy is. The static files above are not: they are the compiled
+	// UI, the same bytes anyone can build from this repository.
+	mux.HandleFunc("GET /api/state", guardHost(hosts, cons.stateHandler))
+	mux.HandleFunc("GET /api/events", guardHost(hosts, sseHandler(h)))
 	// Admin calls are proxied so the browser never holds the admin token and
 	// no CORS setup is needed. Reads go through here too — the token is
 	// attached to every method, not just the writing ones.
@@ -239,7 +272,7 @@ func run() error {
 		log.Printf("testconsole: This process attaches an admin token to everything it proxies")
 		log.Printf("testconsole: to %s. Anyone who can reach this port can change", apiURL)
 		log.Printf("testconsole: configuration for every service watching it.")
-		log.Printf("testconsole: Set BIND_ADDR=127.0.0.1 (or PORT=8090) to keep it local.")
+		log.Printf("testconsole: Unset BIND_ADDR (or set BIND_ADDR=127.0.0.1) to keep it local.")
 		log.Printf("testconsole: ****************************************************************")
 	}
 
@@ -488,10 +521,17 @@ type adminProxy struct {
 	baseURL        string
 	token          string
 	allowedOrigins []string
+	hosts          *hostPolicy
 	client         *http.Client
 }
 
 func (p *adminProxy) forward(w http.ResponseWriter, r *http.Request) {
+	// Host first: until it is known to name this console, Origin says nothing,
+	// because a rebound page controls both and can make them agree.
+	if !p.hosts.permits(r.Host) {
+		writeUnknownHost(w)
+		return
+	}
 	if !p.sameOrigin(r) {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cross-origin request refused; the console proxies an admin token and only answers its own page",
@@ -577,8 +617,99 @@ func (p *adminProxy) forward(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
+// hostPolicy is the set of names this console answers to.
+//
+// It exists because comparing Origin against Host defends nothing on its own:
+// both are set by the page making the request. A page on evil.example whose DNS
+// answer is 127.0.0.1 reaches this process with Host: evil.example and Origin:
+// http://evil.example — they match, no preflight applies to a JSON GET or to a
+// POST the page can shape, and the proxy would hand over its admin token. That
+// is DNS rebinding, and only Host can stop it: a browser fills Host in from the
+// address it was pointed at, so a rebound page cannot claim to be reaching
+// "localhost" no matter where the name resolves.
+//
+// So Host is checked against names configured up front — where the console is
+// bound, plus ALLOWED_ORIGINS and ALLOWED_HOSTS — and anything else is refused
+// before Origin is looked at at all. Loopback is always accepted, since a
+// console on loopback is reachable as localhost, 127.0.0.1 and ::1 without any
+// of them being written down.
+type hostPolicy struct {
+	// Ports are deliberately not part of this. A rebinding page names the
+	// console's port already — it has to, to reach it — so requiring a match
+	// buys nothing, while a dev-server hop that keeps the browser's Host would
+	// arrive on a different one.
+	names map[string]bool
+}
+
+// newHostPolicy builds the allowlist from listen addresses, origins or bare
+// host names, in any mix. A wildcard bind ("0.0.0.0:8090", ":8090") names no
+// host and so adds none: binding to every interface says nothing about which
+// name a request may arrive under, and ALLOWED_HOSTS is where that is said.
+func newHostPolicy(names ...string) *hostPolicy {
+	p := &hostPolicy{names: make(map[string]bool, len(names))}
+	for _, n := range names {
+		if h := hostname(n); h != "" && h != "0.0.0.0" && h != "::" {
+			p.names[h] = true
+		}
+	}
+	return p
+}
+
+// permits reports whether host — a Host header, with or without a port — is one
+// of those names.
+func (p *hostPolicy) permits(host string) bool {
+	h := hostname(host)
+	if h == "" {
+		return false
+	}
+	if isLoopbackHost(h) {
+		return true
+	}
+	return p != nil && p.names[h]
+}
+
+// hostname reduces a Host header, a listen address or an origin URL to its bare
+// lowercase host: no scheme, no port, no IPv6 brackets.
+func hostname(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "://") {
+		u, err := url.Parse(s)
+		if err != nil {
+			return ""
+		}
+		s = u.Host
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		s = h
+	}
+	return strings.ToLower(strings.Trim(s, "[]"))
+}
+
+// guardHost refuses a request whose Host is not a name this console answers to.
+// The handlers behind it serve the consumer's whole cache, which a rebound page
+// must not be able to read any more than it can reach the admin proxy.
+func guardHost(p *hostPolicy, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !p.permits(r.Host) {
+			writeUnknownHost(w)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// writeUnknownHost says why without echoing the Host back — the value came from
+// whoever sent it, and it is not this console's job to repeat it.
+func writeUnknownHost(w http.ResponseWriter) {
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": "unrecognised Host; the console answers only to the addresses it is bound to " +
+			"(set ALLOWED_HOSTS to name another)",
+	})
+}
+
 // sameOrigin decides whether r may be treated as coming from the console's own
-// page.
+// page. It runs after the Host check, never instead of it: on its own this
+// comparison is between two headers the caller writes.
 //
 // A browser sends Origin on every cross-origin request and on same-origin
 // writes, so a mismatch is the CSRF signal. It omits the header on a plain
@@ -590,11 +721,11 @@ func (p *adminProxy) forward(w http.ResponseWriter, r *http.Request) {
 //
 // One origin is accepted that is not literally the console's own: a page served
 // from loopback, when the console is itself answering on loopback. `npm run
-// dev` puts the UI on :5173 and proxies /api here with Host rewritten to the
-// console, so the two never match on their own. Loopback is the one place that
-// relaxation is safe — the pages this check exists to stop are served from the
-// internet, and none of them can claim to be on this machine. Bind the console
-// anywhere else and the comparison goes back to being exact.
+// dev` puts the UI on :5173 and proxies /api here, so the two never match on
+// their own. Loopback is the one place that relaxation is safe — the pages this
+// check exists to stop are served from the internet, and none of them can claim
+// to be on this machine, now that Host is checked before this runs. Bind the
+// console anywhere else and the comparison goes back to being exact.
 func (p *adminProxy) sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -658,10 +789,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// startEmbeddedNATS runs an in-process JetStream server on the port from
-// natsURL, storing its data under the OS temp dir. The store directory is
+// startEmbeddedNATS runs an in-process JetStream server on host and the port
+// from natsURL, storing its data under the OS temp dir. The store directory is
 // returned so the caller can remove it on the way out.
-func startEmbeddedNATS(natsURL string) (*natsserver.Server, string, error) {
+//
+// host comes from BIND_ADDR and is loopback unless that says otherwise. It used
+// to be 0.0.0.0 regardless: a dev tool started for a laptop demo put an
+// unauthenticated, writable JetStream on the LAN, and a forged KV entry is
+// indistinguishable to a consumer from one central-config published.
+func startEmbeddedNATS(natsURL, host string) (*natsserver.Server, string, error) {
 	u, err := url.Parse(natsURL)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse NATS_URL: %w", err)
@@ -679,7 +815,7 @@ func startEmbeddedNATS(natsURL string) (*natsserver.Server, string, error) {
 	}
 
 	srv, err := natsserver.NewServer(&natsserver.Options{
-		Host:      "0.0.0.0",
+		Host:      host,
 		Port:      port,
 		JetStream: true,
 		StoreDir:  storeDir,
@@ -703,17 +839,36 @@ func startEmbeddedNATS(natsURL string) (*natsserver.Server, string, error) {
 
 // listenAddr resolves the address to bind from PORT and BIND_ADDR.
 //
-// A bare "8090" is the form most tooling uses and says nothing about which
-// interfaces to expose, so BIND_ADDR — loopback by default — supplies the host.
-// A value containing a colon is a Go listen address and is honoured as written,
-// including ":8090" for every interface, which is what the compose stack sets
-// so its published port is reachable from the host.
+// Two of the three forms of PORT say nothing about which interfaces to expose:
+// a bare "8090", and ":8090", which is a Go listen address only in the sense
+// that net.Listen accepts it — nobody types it meaning "the whole LAN". Both
+// take their host from BIND_ADDR, which is loopback unless it is set, because
+// this process proxies an admin token and must not widen itself by accident.
+// Only a PORT that names a host — "0.0.0.0:8090" — widens the bind on its own,
+// since that is the one form that says so out loud. That is what a container
+// needs in order for its published port to be reachable.
 func listenAddr(port, bind string) string {
 	port = strings.TrimSpace(port)
-	if strings.Contains(port, ":") {
-		return port
+	bind = bindHost(bind)
+	host, bare, err := net.SplitHostPort(port)
+	if err != nil {
+		// Not host:port at all — a bare port number, the form most tooling uses.
+		return net.JoinHostPort(bind, port)
 	}
-	return net.JoinHostPort(bind, port)
+	if host == "" {
+		return net.JoinHostPort(bind, bare)
+	}
+	return port
+}
+
+// bindHost is the interface BIND_ADDR asks for, and loopback when it asks for
+// nothing. Unset has to mean loopback everywhere, not just where PORT happens
+// to be written as a bare number.
+func bindHost(bindAddr string) string {
+	if bindAddr = strings.TrimSpace(bindAddr); bindAddr != "" {
+		return bindAddr
+	}
+	return defaultBindAddr
 }
 
 // isExposed reports whether addr accepts connections from beyond this machine.

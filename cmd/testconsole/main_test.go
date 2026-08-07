@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // consoleHost is what the browser would have in its address bar, so it is both
@@ -52,7 +54,10 @@ func newProxy(t *testing.T, up *upstream, allowed ...string) *adminProxy {
 		baseURL:        up.URL,
 		token:          "local-dev-token",
 		allowedOrigins: allowed,
-		client:         up.Client(),
+		// The console under test is the one at consoleHost; a case that moves
+		// the console elsewhere replaces this.
+		hosts:  newHostPolicy(consoleHost),
+		client: up.Client(),
 	}
 }
 
@@ -109,6 +114,10 @@ func TestForwardOriginCheck(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			up := newUpstream(t)
 			p := newProxy(t, up, tc.allowed...)
+			// Each case is about Origin, so the console is configured to be
+			// reachable as the Host the case sends. Host itself is judged by
+			// TestForwardRefusesUnexpectedHost below.
+			p.hosts = newHostPolicy(tc.host)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/admin/flags", nil)
 			req.Host = tc.host
@@ -123,6 +132,200 @@ func TestForwardOriginCheck(t *testing.T) {
 			}
 			if tc.want != http.StatusOK && up.calls != 0 {
 				t.Fatalf("refused request still reached upstream")
+			}
+		})
+	}
+}
+
+// DNS rebinding is the case the Origin check cannot see: the attacker's page
+// controls Host and Origin both, and makes them agree. evil.example resolving
+// to 127.0.0.1 is a page on the internet talking to this console, and the only
+// header that gives it away is Host — a browser fills it in from the address
+// bar, so a rebound page cannot claim to be reaching localhost.
+func TestForwardRefusesUnexpectedHost(t *testing.T) {
+	cases := []struct {
+		name   string
+		bound  string // what the console was configured to answer to
+		host   string
+		origin string
+		want   int
+	}{
+		{"rebound host agreeing with its own origin", consoleHost, "evil.example:8090", "http://evil.example:8090", http.StatusForbidden},
+		{"rebound host with no origin at all", consoleHost, "evil.example:8090", "", http.StatusForbidden},
+		{"rebound host claiming the console's origin", consoleHost, "evil.example:8090", "http://" + consoleHost, http.StatusForbidden},
+		{"rebound host that merely reads as loopback", consoleHost, "localhost.evil.example:8090", "http://localhost.evil.example:8090", http.StatusForbidden},
+		{"no host at all", consoleHost, "", "", http.StatusForbidden},
+
+		// Loopback is always answered to, under every name it has, because a
+		// console on loopback is reachable as all of them.
+		{"loopback by name", consoleHost, "localhost:8090", "http://localhost:8090", http.StatusOK},
+		{"loopback by address", consoleHost, "127.0.0.1:8090", "http://127.0.0.1:8090", http.StatusOK},
+		{"loopback over IPv6", consoleHost, "[::1]:8090", "http://[::1]:8090", http.StatusOK},
+
+		// Bound to a LAN address, that address is a name it answers to; a
+		// rebound one still is not.
+		{"the address it is bound to", "192.168.1.20:8090", "192.168.1.20:8090", "http://192.168.1.20:8090", http.StatusOK},
+		{"rebound against an exposed console", "192.168.1.20:8090", "evil.example:8090", "http://evil.example:8090", http.StatusForbidden},
+
+		// A wildcard bind names no host, so it grants none: ALLOWED_HOSTS is
+		// where the name is said out loud.
+		{"wildcard bind grants no name", ":8090", "192.168.1.20:8090", "http://192.168.1.20:8090", http.StatusForbidden},
+		{"wildcard bind still answers loopback", ":8090", "localhost:8090", "http://localhost:8090", http.StatusOK},
+		{"named explicitly", "console.internal", "console.internal:8090", "http://console.internal:8090", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			up := newUpstream(t)
+			p := newProxy(t, up)
+			p.hosts = newHostPolicy(tc.bound)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/admin/environments", nil)
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			p.forward(rec, req)
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.want != http.StatusOK && up.calls != 0 {
+				t.Fatalf("refused request still reached upstream wearing the admin token")
+			}
+		})
+	}
+}
+
+// The reproduction that mattered: a JSON POST from a rebound page created a row
+// with the admin token attached. It has to be refused before the proxy builds
+// anything, not merely fail somewhere upstream.
+func TestForwardRefusesRebindingWrite(t *testing.T) {
+	up := newUpstream(t)
+	p := newProxy(t, up)
+
+	// Built by hand rather than through call(), which sends the console's own
+	// Host; the whole point here is the Host the attacker's page sends.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/environments", strings.NewReader(`{"name":"pwned"}`))
+	req.Host = "evil.example:8090"
+	req.Header.Set("Origin", "http://evil.example:8090")
+	req.Header.Set("Content-Type", "application/json")
+	p.forward(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+	}
+	if up.calls != 0 {
+		t.Fatalf("rebound write reached upstream with the admin token")
+	}
+	if !strings.Contains(rec.Body.String(), "Host") {
+		t.Fatalf("403 body does not say it was the Host: %s", rec.Body.String())
+	}
+}
+
+// /api/state and /api/events hand over the consumer's whole cache and have no
+// Origin check of their own, so the Host guard is all that stands in front of
+// them.
+func TestGuardHostProtectsConsumerCache(t *testing.T) {
+	hosts := newHostPolicy(consoleHost)
+
+	t.Run("state refuses a rebound host", func(t *testing.T) {
+		c := &consumer{}
+		req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+		req.Host = "evil.example:8090"
+		rec := httptest.NewRecorder()
+		guardHost(hosts, c.stateHandler)(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("events refuses a rebound host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+		req.Host = "evil.example:8090"
+		rec := httptest.NewRecorder()
+		// The stream never returns on its own; refusal happens before it starts.
+		guardHost(hosts, sseHandler(newHub()))(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct == "text/event-stream" {
+			t.Fatal("refused request still opened the event stream")
+		}
+	})
+
+	t.Run("state answers the console's own host", func(t *testing.T) {
+		c := &consumer{}
+		req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+		req.Host = consoleHost
+		rec := httptest.NewRecorder()
+		guardHost(hosts, c.stateHandler)(rec, req)
+
+		// 503, because no consumer is connected in this test — but it is the
+		// handler's answer, not the guard's.
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want the handler's 503 (body %s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestHostPolicy(t *testing.T) {
+	cases := []struct {
+		name  string
+		names []string
+		host  string
+		want  bool
+	}{
+		{"loopback needs no configuration", nil, "127.0.0.1:8090", true},
+		{"localhost needs no configuration", nil, "localhost:8090", true},
+		{"IPv6 loopback needs no configuration", nil, "[::1]:8090", true},
+		{"anything else does", nil, "evil.example:8090", false},
+		{"empty host", nil, "", false},
+
+		{"a bound address is a name", []string{"192.168.1.20:8090"}, "192.168.1.20:8090", true},
+		{"the port is not part of it", []string{"192.168.1.20:8090"}, "192.168.1.20:9999", true},
+		{"a neighbouring address is not", []string{"192.168.1.20:8090"}, "192.168.1.21:8090", false},
+		{"an origin contributes its host", []string{"http://console.internal"}, "console.internal", true},
+		{"case is not significant", []string{"console.internal"}, "CONSOLE.INTERNAL:8090", true},
+		{"a bare name", []string{"console.internal"}, "console.internal:8090", true},
+
+		{"a wildcard bind names nothing", []string{":8090"}, "192.168.1.20:8090", false},
+		{"0.0.0.0 names nothing", []string{"0.0.0.0:8090"}, "192.168.1.20:8090", false},
+		{"[::] names nothing", []string{"[::]:8090"}, "192.168.1.20:8090", false},
+		{"a wildcard bind still answers loopback", []string{"0.0.0.0:8090"}, "127.0.0.1:8090", true},
+
+		{"a suffix of a configured name is not it", []string{"console.internal"}, "evil.console.internal", false},
+		{"a name that merely starts with localhost is not loopback", nil, "localhost.evil.example", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := newHostPolicy(tc.names...).permits(tc.host); got != tc.want {
+				t.Fatalf("newHostPolicy(%q).permits(%q) = %v, want %v", tc.names, tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHostname(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"localhost:8090", "localhost"},
+		{"127.0.0.1", "127.0.0.1"},
+		{"[::1]:8090", "::1"},
+		{"::1", "::1"},
+		{"http://console.internal:8090", "console.internal"},
+		{"https://Console.Internal", "console.internal"},
+		{" 192.168.1.20:8090 ", "192.168.1.20"},
+		{":8090", ""},
+		{"", ""},
+		{"http://%zz", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := hostname(tc.in); got != tc.want {
+				t.Fatalf("hostname(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -401,9 +604,11 @@ func TestWebHandlerServesBuiltUI(t *testing.T) {
 	}
 }
 
-// PORT=8090 is the form most tooling uses and used to fail at ListenAndServe;
-// PORT=:8090 is a Go listen address and still means every interface, which is
-// what the compose stack relies on.
+// PORT=8090 is the form most tooling uses and used to fail at ListenAndServe.
+// PORT=:8090 says nothing about interfaces either, so BIND_ADDR decides and an
+// unset BIND_ADDR keeps it on loopback — it used to mean every interface, which
+// is how every documented recipe exposed an admin-token-proxying process.
+// Widening it now takes a host said out loud, in PORT or in BIND_ADDR.
 func TestListenAddr(t *testing.T) {
 	cases := []struct {
 		port string
@@ -413,10 +618,16 @@ func TestListenAddr(t *testing.T) {
 		{"8090", "127.0.0.1", "127.0.0.1:8090"},
 		{" 8090 ", "127.0.0.1", "127.0.0.1:8090"},
 		{"8090", "0.0.0.0", "0.0.0.0:8090"},
-		{":8090", "127.0.0.1", ":8090"},
+		{"8090", "", "127.0.0.1:8090"},
+		{":8090", "127.0.0.1", "127.0.0.1:8090"},
+		{":8090", "", "127.0.0.1:8090"},
+		{":8090", "0.0.0.0", "0.0.0.0:8090"},
+		{":8090", "192.168.1.20", "192.168.1.20:8090"},
+		{"0.0.0.0:8090", "", "0.0.0.0:8090"},
 		{"0.0.0.0:8090", "127.0.0.1", "0.0.0.0:8090"},
 		{"127.0.0.1:9000", "0.0.0.0", "127.0.0.1:9000"},
 		{"8090", "::1", "[::1]:8090"},
+		{"[::]:8090", "", "[::]:8090"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.port+"|"+tc.bind, func(t *testing.T) {
@@ -442,6 +653,90 @@ func TestListenAddrIsBindable(t *testing.T) {
 	if !strings.HasPrefix(ln.Addr().String(), "127.0.0.1:") {
 		t.Fatalf("bound %s, want loopback", ln.Addr())
 	}
+}
+
+// The documented recipes set PORT=:8090 and no BIND_ADDR. That combination is
+// what put an admin-token proxy on every interface, so it is asserted on its
+// own: unset means loopback, for the HTTP listener and the embedded NATS server
+// alike.
+func TestDefaultBindIsLoopback(t *testing.T) {
+	if got := listenAddr(":8090", ""); isExposed(got) {
+		t.Fatalf("PORT=:8090 with no BIND_ADDR binds %s, which is not loopback", got)
+	}
+	if got := bindHost(""); got != defaultBindAddr {
+		t.Fatalf("bindHost(\"\") = %q, want %q", got, defaultBindAddr)
+	}
+	if got := bindHost("  "); got != defaultBindAddr {
+		t.Fatalf("bindHost(blank) = %q, want %q", got, defaultBindAddr)
+	}
+	if got := bindHost("0.0.0.0"); got != "0.0.0.0" {
+		t.Fatalf("bindHost(%q) = %q, want it honoured", "0.0.0.0", got)
+	}
+}
+
+// The embedded JetStream server used to be pinned to 0.0.0.0 whatever BIND_ADDR
+// said: unauthenticated, writable KV on the LAN, which is the forged-entry
+// scenario docs/SECURITY.md warns about. It now goes where it is told.
+func TestStartEmbeddedNATSBindsWhereItIsTold(t *testing.T) {
+	port := freePort(t)
+	srv, storeDir, err := startEmbeddedNATS("nats://127.0.0.1:"+strconv.Itoa(port), defaultBindAddr)
+	if err != nil {
+		t.Fatalf("start embedded nats: %v", err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+		_ = os.RemoveAll(storeDir)
+	})
+
+	addr := srv.Addr().String()
+	if !isLoopbackHost(addr) {
+		t.Fatalf("embedded NATS bound %s, want loopback", addr)
+	}
+	// Reachable where it was asked to be...
+	c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("embedded NATS not reachable on loopback: %v", err)
+	}
+	_ = c.Close()
+
+	// ...and nowhere else. Skipped on a machine with no other address to try.
+	lan := lanAddr(t)
+	if lan == "" {
+		t.Skip("no non-loopback address on this machine to prove it is not listening there")
+	}
+	if c, err := net.DialTimeout("tcp", net.JoinHostPort(lan, strconv.Itoa(port)), 2*time.Second); err == nil {
+		_ = c.Close()
+		t.Fatalf("embedded NATS answered on %s, which is not loopback", lan)
+	}
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a port: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// lanAddr returns one of this machine's non-loopback IPv4 addresses, or "" if
+// it has none.
+func lanAddr(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() || ipnet.IP.To4() == nil {
+			continue
+		}
+		return ipnet.IP.String()
+	}
+	return ""
 }
 
 func TestIsExposed(t *testing.T) {

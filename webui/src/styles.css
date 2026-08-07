@@ -12,7 +12,41 @@
   /* Text sitting on a filled accent or danger button, not on the page. */
   --on-accent: #04121f; --on-err: #1a0505;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --nav: 214px; --live: 372px;
+  /* The nav is chrome and scales with the viewport: pinned at 214 it took a
+     seventh of a 1440 laptop. At 12vw — 173 there — nothing truncates; the one
+     item too long for it, Environments & services, folds onto a second line.
+     Taking it narrower is not worth what it buys: at 160 the rail gains two
+     characters a line and two more sub-labels fold, so the nav keeps its 12vw.
+
+     The rail is not a fraction of anything. It is what is left once main has
+     what it needs, which is why it is a subtraction: main's floor is the audit
+     table's 735 of min-content plus the panel's 30 of chrome, the layout spends
+     64 on its own padding and gaps, the nav takes 12vw, and the remaining 88vw
+     less 831 is the rail's — 831 being 765 and 64 and the two pixels the
+     roundings below can cost. That is 296 at 1281, the narrowest viewport that
+     still gets three columns, and 436 at 1440, where a flat 21vw gave it 302.
+     280 is a guard rather than a working value: the rail's own cache tables
+     stop fitting at 256, and in three columns the leftover never falls near
+     either. 460 is the ceiling because that is where a settings blob stops
+     reading as a ribbon — 39 characters to the line, most of a key and its
+     value, and 18 lines for the catalog service's 534 characters, against 27
+     and 25 at the old fixed 372 and 17 and 37 at the 21vw that replaced it.
+     Past 460 the curve flattens — 16 lines at 500, 15 at 520 — and the width is
+     worth more to main, which never stops finding a use for it. */
+  --nav: clamp(150px, 12vw, 214px); --live: clamp(280px, 88vw - 831px, 460px);
+}
+/* A vw track lands on a fraction of a pixel, and that fraction runs all the way
+   down: at 1512 the nav is 181.44 and the rail is on its ceiling, which leaves
+   main 806.56, which leaves the empty flagKey field 368.28 of content box — and
+   the browser reports that as 368 of client and 369 of scroll, a phantom
+   overflow on a field with nothing in it. Snapping the two tracks to whole
+   pixels keeps every width below them whole. Guarded, because a browser without
+   round() would otherwise drop grid-template-columns entirely. */
+@supports (width: round(12vw, 1px)) {
+  :root {
+    --nav: clamp(150px, round(12vw, 1px), 214px);
+    --live: clamp(280px, round(88vw - 831px, 1px), 460px);
+  }
 }
 /* Light is the same palette at the lightness a white page needs: every signal
    colour keeps its hue and clears 4.5:1 against --bg, --panel and --raised, so
@@ -103,7 +137,12 @@ main { display: grid; gap: 14px; align-content: start; min-width: 0; }
 .toolbar .spacer-note { flex: 1 1 220px; }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .actions { display: flex; gap: 8px; }
-.right { text-align: right; white-space: nowrap; }
+/* The action cell keeps its right edge but not its nowrap: it was the last
+   column of the audit table and the one nowrap amputated, so a row that says
+   "Hide body" folded its label rather than pushing the button off the table.
+   With room it still sits on one line — this only bites when nothing else can
+   give. */
+.right { text-align: right; }
 .nowrap { white-space: nowrap; }
 .mono { font-family: var(--mono); }
 .scroll-x { overflow-x: auto; }
@@ -154,7 +193,12 @@ button.close { border: 0; font-size: 18px; line-height: 1; padding: 2px 8px; col
 }
 .grid td, .kv td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .grid tr.sel > td, .grid tr.sel > th { background: var(--raised); }
-.grid td.clip, .kv td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A truncated value is a value nobody can read: at 260px the ellipsis hid 92%
+   of a settings blob, and under nowrap that max-width was also the cell's
+   minimum, which is what pushed the rail 84px past its own edge. The value
+   wraps instead — anywhere, because a JSON string offers no spaces to break at
+   and a cell that cannot break is a cell that cannot shrink. */
+.grid td.clip, .kv td.clip { overflow-wrap: anywhere; }
 .kv tr.flash td { background: rgba(77, 163, 255, .18); }
 .on { color: var(--ok); }
 .off { color: var(--muted); }
@@ -168,7 +212,14 @@ button.close { border: 0; font-size: 18px; line-height: 1; padding: 2px 8px; col
 
 .audit td { vertical-align: middle; }
 .audit .body-row td { background: var(--raised); }
-.audit pre { margin: 0 0 6px; max-height: 260px; overflow: auto; font-size: 12px; }
+/* The expanded body spans every column, so a single long JSON line in it used
+   to set the whole table's minimum width and shove the action column off the
+   edge. It wraps — keeping its indentation, losing only the horizontal scroll
+   nobody could see — so opening a body costs height and never width. */
+.audit pre {
+  margin: 0 0 6px; max-height: 260px; overflow: auto; font-size: 12px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .actor { color: var(--accent); }
 .method { font-weight: 700; }
 .method.POST { color: var(--ok); }
@@ -184,8 +235,11 @@ button.close { border: 0; font-size: 18px; line-height: 1; padding: 2px 8px; col
 .chip.bad { color: var(--err); border-color: var(--err); }
 
 /* The KV key is the thing that ties a database row to what a consumer sees,
-   so it is styled as one object with the environment segment held back. */
-.kvkey { font: 12px var(--mono); color: var(--text); white-space: nowrap; }
+   so it is styled as one object with the environment segment held back. It
+   folds at its dots — KvKey marks them with <wbr> — because those are the only
+   places a key means anything split in two; `anywhere` is the last resort for
+   a single segment wider than the column, so the key can never set a floor. */
+.kvkey { font: 12px var(--mono); color: var(--text); overflow-wrap: anywhere; }
 .kvkey-env { color: var(--muted); }
 .kvkey-bucket {
   color: var(--accent); font-size: 10px; letter-spacing: .06em;
@@ -317,9 +371,14 @@ button.close { border: 0; font-size: 18px; line-height: 1; padding: 2px 8px; col
 .verdict.good { border-color: var(--ok); color: var(--ok); }
 .verdict.bad { border-color: var(--drift); color: var(--drift); }
 
+/* Raw server output — /metrics lines, the inventory dump. It scrolls down, not
+   across: a Prometheus line carries its labels at the end, which is exactly the
+   half a horizontal scrollbar hides. Wrapping keeps the indentation and puts
+   the whole line on screen. */
 .raw {
   font: 12px var(--mono); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 10px; max-height: 420px; overflow: auto; margin: 0;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
 /* ── live rail ────────────────────────────────────────────────────────────── */
@@ -343,7 +402,9 @@ button.close { border: 0; font-size: 18px; line-height: 1; padding: 2px 8px; col
 .live-body { padding: 12px; display: grid; gap: 14px; }
 .log { font: 12px var(--mono); padding: 10px 12px; }
 .log div { padding: 4px 0; border-bottom: 1px dashed var(--line); }
-.clip-inline { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+/* The log is the record of what was actually pushed, so the pushed value wraps
+   onto a second line rather than ending in an ellipsis nobody can expand. */
+.clip-inline { overflow-wrap: anywhere; }
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
 

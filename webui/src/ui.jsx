@@ -39,14 +39,24 @@ export function Empty({ children }) {
   return <div className="state empty">{children}</div>
 }
 
+// atDots marks every dot as a place the key may fold. A key is dotted segments
+// and a narrow column has to break it somewhere; the segment boundaries are the
+// only breaks that leave both halves meaning something, so 1.catalog-api.pt-BR
+// folds after a dot rather than through the middle of catalog-api.
+export function atDots(key) {
+  const parts = String(key).split('.')
+  return parts.flatMap((seg, i) => (i === parts.length - 1 ? [seg] : [`${seg}.`, <wbr key={i} />]))
+}
+
 // KvKey renders the JetStream key a row maps to, with the environment segment
 // dimmed so the shape of the key — env first, then identity — reads at a
-// glance. It is the same string the push log prints.
+// glance. It is the same string the push log prints. The title carries the key
+// unbroken, for copying and for the case where it did fold.
 export function KvKey({ envId, rest, bucket }) {
   return (
     <span className="kvkey" title={`${bucket} bucket, key ${envId}.${rest}`}>
       {bucket && <span className="kvkey-bucket">{bucket}</span>}
-      <span className="kvkey-env">{envId}.</span>{rest}
+      <span className="kvkey-env">{envId}.</span><wbr />{atDots(rest)}
     </span>
   )
 }

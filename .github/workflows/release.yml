@@ -243,13 +243,6 @@ jobs:
       # of the Node stage; it is a local harness, it is never deployed, and it
       # is not pushed here. Nothing in this image serves a browser UI.
       #
-      # linux/amd64 only. The Dockerfile's build stage compiles in-image without
-      # a $BUILDPLATFORM/$TARGETARCH split, so asking buildx for linux/arm64
-      # would run the whole Go build under QEMU emulation for every release.
-      # Making it cross-compile properly is a Dockerfile change, not a workflow
-      # one; until then arm64 is served by the release binaries above, which are
-      # genuinely cross-compiled because CGO is out of the picture.
-      #
       # metadata-action's labels are applied with --label, which takes
       # precedence over the Dockerfile's own LABEL lines, and three of them
       # disagree with what the binary inside the image prints: version would be

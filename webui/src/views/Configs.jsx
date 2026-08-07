@@ -5,7 +5,7 @@ import {
   Refresh, ScopeNote, fmtTime, jsonValue, useList, useResetOnChange,
 } from '../ui.jsx'
 
-// Appsettings are the highest-consequence rows in the system: one bad tree
+// Service settings are the highest-consequence rows in the system: one bad tree
 // breaks every instance of that service at once. So the editor validates as you
 // type and shows the diff against the row as loaded before anything is sent.
 
@@ -26,14 +26,14 @@ export default function Configs({ ctx }) {
 
   const remove = async (row) => {
     const ok = await confirm({
-      title: `Delete appsettings for ${refs.svcName(row.microserviceId)} in ${refs.envName(row.environmentId)}?`,
+      title: `Delete service settings for ${refs.svcName(row.microserviceId)} in ${refs.envName(row.environmentId)}?`,
       body: 'This removes the whole settings tree for that service in that environment.',
       consequences: [
         `The KV key ${row.environmentId}.${row.microserviceId} is purged, so instances of that service stop receiving configuration.`,
         'Running instances keep the copy already in memory; instances that restart come up with no configuration from the control plane.',
       ],
-      target: `appsettings id ${row.id}`,
-      confirmLabel: 'Delete appsettings',
+      target: `service settings id ${row.id}`,
+      confirmLabel: 'Delete service settings',
     })
     if (!ok) return
     const r = await write(`DELETE /configs/values/${row.id}`, () => api.deleteConfig(row.id))
@@ -43,9 +43,9 @@ export default function Configs({ ctx }) {
   return (
     <>
       <PageHeader
-        title="Appsettings"
+        title="Service settings"
         subtitle="The per-service JSON tree, one row per service per environment. One bad tree breaks every instance of that service at once, so the editor validates as you type and diffs before it sends."
-        action={<button className="ghost" onClick={() => { setCreating(true); setSelected(null) }}>New appsettings row</button>}
+        action={<button className="ghost" onClick={() => { setCreating(true); setSelected(null) }}>New service settings row</button>}
       />
 
       <div className="panel">
@@ -61,9 +61,9 @@ export default function Configs({ ctx }) {
           <ScopeNote envId={envId} envName={refs.envName} />
         </div>
 
-        {error ? <Banner problem={{ action: 'Load appsettings rows', error }} />
-          : loading && rows.length === 0 ? <Loading what="appsettings" />
-            : rows.length === 0 ? <Empty>No appsettings rows match these filters.</Empty>
+        {error ? <Banner problem={{ action: 'Load service settings rows', error }} />
+          : loading && rows.length === 0 ? <Loading what="service settings" />
+            : rows.length === 0 ? <Empty>No service settings rows match these filters.</Empty>
               : (
                 <div className="scroll-x">
                   <table className="grid">
@@ -76,7 +76,7 @@ export default function Configs({ ctx }) {
                           <td>{row.id}</td>
                           <td>{refs.svcName(row.microserviceId)}</td>
                           <td>{refs.envName(row.environmentId)}</td>
-                          <td><KvKey bucket="MICROCONFIG" envId={row.environmentId} rest={row.microserviceId} /></td>
+                          <td><KvKey bucket="SERVICESETTINGS" envId={row.environmentId} rest={row.microserviceId} /></td>
                           <td className="t">{Object.keys(row.settingsJson ?? {}).length} top-level</td>
                           <td className="t">{fmtTime(row.updatedAt)}</td>
                           <td className="right">
@@ -127,7 +127,7 @@ function CreateConfig({ ctx, onClose, onCreated }) {
   return (
     <div className="editor">
       <div className="editor-head">
-        <strong>New appsettings row</strong>
+        <strong>New service settings row</strong>
         <button className="ghost close" onClick={onClose} aria-label="Close">×</button>
       </div>
       <div className="row">
@@ -147,11 +147,11 @@ function CreateConfig({ ctx, onClose, onCreated }) {
         </label>
       </div>
       {microserviceId && environmentId && (
-        <p className="hint">Publishes to <KvKey bucket="MICROCONFIG" envId={environmentId} rest={microserviceId} /></p>
+        <p className="hint">Publishes to <KvKey bucket="SERVICESETTINGS" envId={environmentId} rest={microserviceId} /></p>
       )}
       <JsonEditor label="settingsJson" text={text} onText={setText} />
       <div className="actions">
-        <button disabled={!ready} onClick={create}>Create appsettings</button>
+        <button disabled={!ready} onClick={create}>Create service settings</button>
       </div>
     </div>
   )
@@ -195,9 +195,9 @@ function EditConfig({ ctx, row: initial, snapshot, onClose, onSaved }) {
       <div className="editor-head">
         <div>
           <strong>{refs.svcName(row.microserviceId)}</strong> in <strong>{refs.envName(row.environmentId)}</strong>
-          <div className="t">appsettings id {row.id} · loaded at {fmtTime(row.updatedAt)}</div>
+          <div className="t">service settings id {row.id} · loaded at {fmtTime(row.updatedAt)}</div>
         </div>
-        <KvKey bucket="MICROCONFIG" envId={row.environmentId} rest={row.microserviceId} />
+        <KvKey bucket="SERVICESETTINGS" envId={row.environmentId} rest={row.microserviceId} />
         <button className="ghost close" onClick={onClose} aria-label="Close">×</button>
       </div>
 
@@ -218,7 +218,7 @@ function EditConfig({ ctx, row: initial, snapshot, onClose, onSaved }) {
       )}
 
       <div className="actions">
-        <button disabled={!isJsonObject(text)} onClick={save}>Save appsettings</button>
+        <button disabled={!isJsonObject(text)} onClick={save}>Save service settings</button>
       </div>
     </div>
   )

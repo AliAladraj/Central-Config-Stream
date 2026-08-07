@@ -1,4 +1,4 @@
-package microconfig_test
+package servicesettings_test
 
 import (
 	"context"
@@ -10,17 +10,17 @@ import (
 	"time"
 
 	"github.com/AliAladraj/Central-Config-Stream/internal/database"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
-func newTestRepo(t *testing.T) (*microconfig.SQLiteRepository, *sql.DB) {
+func newTestRepo(t *testing.T) (*servicesettings.SQLiteRepository, *sql.DB) {
 	t.Helper()
 	db, err := database.NewSQLiteDB("file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "t.db")))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return microconfig.NewSQLiteRepository(db), db
+	return servicesettings.NewSQLiteRepository(db), db
 }
 
 // ageSeededRows backdates every seeded row so a later update is the only one
@@ -38,7 +38,7 @@ func TestCreateAndDeleteMicroserviceConfig(t *testing.T) {
 	ctx := context.Background()
 
 	// Microservice 2 has no appsettings in environment 3 yet.
-	created, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	created, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 2, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{"http":{"timeoutMs":100}}`),
 	})
 	if err != nil {
@@ -60,22 +60,22 @@ func TestCreateAndDeleteMicroserviceConfig(t *testing.T) {
 
 	// The natural key is unique, so a second create is a conflict, not a
 	// duplicate row.
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 2, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{}`),
-	}); !errors.Is(err, microconfig.ErrConfigExists) {
+	}); !errors.Is(err, servicesettings.ErrConfigExists) {
 		t.Fatalf("expected ErrConfigExists, got %v", err)
 	}
 
 	// A missing parent is named rather than left to the foreign key, because the
 	// caller has to tell it apart from a collision to pick a status code.
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 999, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{}`),
-	}); !errors.Is(err, microconfig.ErrMicroserviceNotFound) {
+	}); !errors.Is(err, servicesettings.ErrMicroserviceNotFound) {
 		t.Fatalf("expected ErrMicroserviceNotFound, got %v", err)
 	}
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 2, EnvironmentID: 999, SettingsJSON: json.RawMessage(`{}`),
-	}); !errors.Is(err, microconfig.ErrEnvironmentNotFound) {
+	}); !errors.Is(err, servicesettings.ErrEnvironmentNotFound) {
 		t.Fatalf("expected ErrEnvironmentNotFound, got %v", err)
 	}
 
@@ -88,10 +88,10 @@ func TestCreateAndDeleteMicroserviceConfig(t *testing.T) {
 	if removed.EnvironmentID != 3 || removed.MicroserviceID != 2 {
 		t.Fatalf("unexpected removed row: %+v", removed)
 	}
-	if _, err := repo.GetMicroserviceConfigByID(ctx, created.ID); !errors.Is(err, microconfig.ErrConfigNotFound) {
+	if _, err := repo.GetMicroserviceConfigByID(ctx, created.ID); !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("expected ErrConfigNotFound after delete, got %v", err)
 	}
-	if _, err := repo.DeleteMicroserviceConfig(ctx, created.ID); !errors.Is(err, microconfig.ErrConfigNotFound) {
+	if _, err := repo.DeleteMicroserviceConfig(ctx, created.ID); !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("second delete: expected ErrConfigNotFound, got %v", err)
 	}
 }
@@ -105,13 +105,13 @@ func TestUpdateMicroserviceConfigRewritesTheNaturalKey(t *testing.T) {
 
 	// Seed row 200 is microservice 1 in environment 1; row 201 already holds
 	// microservice 2 in the same environment.
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 2, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{}`),
-	}); !errors.Is(err, microconfig.ErrConfigExists) {
+	}); !errors.Is(err, servicesettings.ErrConfigExists) {
 		t.Fatalf("expected ErrConfigExists, got %v", err)
 	}
 
-	moved, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	moved, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{"a":1}`),
 	})
 	if err != nil {
@@ -121,9 +121,9 @@ func TestUpdateMicroserviceConfigRewritesTheNaturalKey(t *testing.T) {
 		t.Fatalf("the update did not rewrite the key: %+v", moved)
 	}
 
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 999, MicroserviceID: 2, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{}`),
-	}); !errors.Is(err, microconfig.ErrConfigNotFound) {
+	}); !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("update of a missing row: expected ErrConfigNotFound, got %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestListMicroserviceConfigsFiltersAndPages(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	ctx := context.Background()
 
-	all, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{Page: microconfig.Page{Limit: 100}})
+	all, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{Page: servicesettings.Page{Limit: 100}})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -140,8 +140,8 @@ func TestListMicroserviceConfigsFiltersAndPages(t *testing.T) {
 		t.Fatalf("expected 3 seeded rows, got %d", len(all))
 	}
 
-	byService, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 100}, MicroserviceID: 1,
+	byService, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 100}, MicroserviceID: 1,
 	})
 	if err != nil {
 		t.Fatalf("list by microservice: %v", err)
@@ -150,8 +150,8 @@ func TestListMicroserviceConfigsFiltersAndPages(t *testing.T) {
 		t.Fatalf("unexpected rows for microservice 1: %+v", byService)
 	}
 
-	byEnv, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 100}, EnvironmentID: 3,
+	byEnv, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 100}, EnvironmentID: 3,
 	})
 	if err != nil {
 		t.Fatalf("list by environment: %v", err)
@@ -162,8 +162,8 @@ func TestListMicroserviceConfigsFiltersAndPages(t *testing.T) {
 
 	// The page is bound exactly as given, and the order is by id, so an offset
 	// lands on the row the caller can predict from the unpaged list.
-	page, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 2, Offset: 1},
+	page, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 2, Offset: 1},
 	})
 	if err != nil {
 		t.Fatalf("list page: %v", err)
@@ -174,7 +174,7 @@ func TestListMicroserviceConfigsFiltersAndPages(t *testing.T) {
 
 	// Nothing is normalised down here — a zero limit fetches nothing, which is
 	// why the service normalises the page before a repository ever sees it.
-	empty, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{})
+	empty, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{})
 	if err != nil {
 		t.Fatalf("list with a zero page: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestUpdateMicroserviceConfigOptimisticConcurrency(t *testing.T) {
 
 	// Matching timestamp: the guarded update applies.
 	expected := current.UpdatedAt
-	updated, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	updated, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 1,
 		SettingsJSON: json.RawMessage(`{"a":1}`), ExpectedUpdatedAt: &expected,
 	})
@@ -210,25 +210,25 @@ func TestUpdateMicroserviceConfigOptimisticConcurrency(t *testing.T) {
 
 	// Stale timestamp: somebody else got there first.
 	stale := expected.Add(-time.Hour)
-	_, err = repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	_, err = repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 1,
 		SettingsJSON: json.RawMessage(`{"loser":true}`), ExpectedUpdatedAt: &stale,
 	})
-	if !errors.Is(err, microconfig.ErrConflict) {
+	if !errors.Is(err, servicesettings.ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}
 
 	// A guard on a row that does not exist is still a not-found, not a conflict.
-	_, err = repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	_, err = repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 999, MicroserviceID: 2, EnvironmentID: 3,
 		SettingsJSON: json.RawMessage(`{}`), ExpectedUpdatedAt: &stale,
 	})
-	if !errors.Is(err, microconfig.ErrConfigNotFound) {
+	if !errors.Is(err, servicesettings.ErrConfigNotFound) {
 		t.Fatalf("expected ErrConfigNotFound, got %v", err)
 	}
 
 	// No guard: last write still wins.
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{"forced":true}`),
 	}); err != nil {
 		t.Fatalf("unguarded update: %v", err)
@@ -273,7 +273,7 @@ func TestListAllForReconcileSweepsAndWindows(t *testing.T) {
 
 	ageSeededRows(t, db)
 
-	if _, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: 200, MicroserviceID: 1, EnvironmentID: 1, SettingsJSON: json.RawMessage(`{"a":1}`),
 	}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -295,7 +295,7 @@ func TestReferenceTableListsPage(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	ctx := context.Background()
 
-	services, err := repo.ListMicroservices(ctx, microconfig.Page{Limit: 2})
+	services, err := repo.ListMicroservices(ctx, servicesettings.Page{Limit: 2})
 	if err != nil {
 		t.Fatalf("list microservices: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestReferenceTableListsPage(t *testing.T) {
 		t.Fatalf("unexpected first page of microservices: %+v", services)
 	}
 
-	rest, err := repo.ListMicroservices(ctx, microconfig.Page{Limit: 2, Offset: 2})
+	rest, err := repo.ListMicroservices(ctx, servicesettings.Page{Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatalf("list microservices page 2: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestReferenceTableListsPage(t *testing.T) {
 		t.Fatalf("the second page did not follow the first: %+v", rest)
 	}
 
-	envs, err := repo.ListEnvironments(ctx, microconfig.Page{Limit: 2, Offset: 1})
+	envs, err := repo.ListEnvironments(ctx, servicesettings.Page{Limit: 2, Offset: 1})
 	if err != nil {
 		t.Fatalf("list environments: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestDeleteReferenceRowCountsEveryPointingTable(t *testing.T) {
 	if _, err := repo.DeleteMicroserviceConfig(ctx, 200); err != nil {
 		t.Fatalf("delete config: %v", err)
 	}
-	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, microconfig.ErrMicroserviceInUse) {
+	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, servicesettings.ErrMicroserviceInUse) {
 		t.Fatalf("localization rows did not hold the microservice: got %v", err)
 	}
 
@@ -343,7 +343,7 @@ func TestDeleteReferenceRowCountsEveryPointingTable(t *testing.T) {
 	if err := repo.DeleteMicroservice(ctx, 1); err != nil {
 		t.Fatalf("delete an unreferenced microservice: %v", err)
 	}
-	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, microconfig.ErrMicroserviceNotFound) {
+	if err := repo.DeleteMicroservice(ctx, 1); !errors.Is(err, servicesettings.ErrMicroserviceNotFound) {
 		t.Fatalf("second delete: expected ErrMicroserviceNotFound, got %v", err)
 	}
 
@@ -352,7 +352,7 @@ func TestDeleteReferenceRowCountsEveryPointingTable(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM CONFIG_MICROSERVICE_APPSETTINGS WHERE ENVIRONMENT_ID = 1`); err != nil {
 		t.Fatalf("clear appsettings: %v", err)
 	}
-	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, microconfig.ErrEnvironmentInUse) {
+	if err := repo.DeleteEnvironment(ctx, 1); !errors.Is(err, servicesettings.ErrEnvironmentInUse) {
 		t.Fatalf("flag values did not hold the environment: got %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM CONFIG_FLAG_VALUE WHERE ENVIRONMENT_ID = 1`); err != nil {
@@ -374,7 +374,7 @@ func TestCreateReferenceRowsCollideOnTheirNames(t *testing.T) {
 	if ms.ID == 0 || ms.Microservice != "search-api" {
 		t.Fatalf("unexpected microservice: %+v", ms)
 	}
-	if _, err := repo.CreateMicroservice(ctx, "search-api"); !errors.Is(err, microconfig.ErrMicroserviceExists) {
+	if _, err := repo.CreateMicroservice(ctx, "search-api"); !errors.Is(err, servicesettings.ErrMicroserviceExists) {
 		t.Fatalf("expected ErrMicroserviceExists, got %v", err)
 	}
 
@@ -385,7 +385,7 @@ func TestCreateReferenceRowsCollideOnTheirNames(t *testing.T) {
 	if env.ID == 0 || env.Environment != "qa" {
 		t.Fatalf("unexpected environment: %+v", env)
 	}
-	if _, err := repo.CreateEnvironment(ctx, "qa"); !errors.Is(err, microconfig.ErrEnvironmentExists) {
+	if _, err := repo.CreateEnvironment(ctx, "qa"); !errors.Is(err, servicesettings.ErrEnvironmentExists) {
 		t.Fatalf("expected ErrEnvironmentExists, got %v", err)
 	}
 }
@@ -411,9 +411,9 @@ func TestConcurrentCreateCollidesAsAlreadyExists(t *testing.T) {
 		t.Fatalf("install the racing writer: %v", err)
 	}
 
-	if _, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	if _, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 2, EnvironmentID: 3, SettingsJSON: json.RawMessage(`{"mine":true}`),
-	}); !errors.Is(err, microconfig.ErrConfigExists) {
+	}); !errors.Is(err, servicesettings.ErrConfigExists) {
 		t.Fatalf("lost create: expected ErrConfigExists, got %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestConcurrentCreateCollidesAsAlreadyExists(t *testing.T) {
 		END;`); err != nil {
 		t.Fatalf("install the racing writer: %v", err)
 	}
-	if _, err := repo.CreateMicroservice(ctx, "race-me"); !errors.Is(err, microconfig.ErrMicroserviceExists) {
+	if _, err := repo.CreateMicroservice(ctx, "race-me"); !errors.Is(err, servicesettings.ErrMicroserviceExists) {
 		t.Fatalf("lost create of a microservice: expected ErrMicroserviceExists, got %v", err)
 	}
 }

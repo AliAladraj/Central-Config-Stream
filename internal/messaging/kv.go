@@ -25,10 +25,10 @@ var ErrNotProvisioned = errors.New("messaging: KV buckets are not provisioned")
 // Buckets holds the three KV stores this service publishes to. Handles are
 // swapped in place by Ensure, so every read goes through the mutex.
 type Buckets struct {
-	mu           sync.RWMutex
-	flags        jetstream.KeyValue
-	microConfig  jetstream.KeyValue
-	localization jetstream.KeyValue
+	mu              sync.RWMutex
+	flags           jetstream.KeyValue
+	serviceSettings jetstream.KeyValue
+	localization    jetstream.KeyValue
 
 	// Kept so Ensure can re-provision the buckets later. Without them a NATS
 	// restart with an empty store would leave every publish failing against a
@@ -54,7 +54,7 @@ func (o BucketOptions) withDefaults() BucketOptions {
 	return o
 }
 
-// EnsureBuckets creates (or updates) the FLAGS, MICROCONFIG and LOCALIZATION
+// EnsureBuckets creates (or updates) the FLAGS, SERVICESETTINGS and LOCALIZATION
 // KV buckets idempotently. Safe to call on every startup.
 func EnsureBuckets(ctx context.Context, js jetstream.JetStream, opts BucketOptions) (*Buckets, error) {
 	opts = opts.withDefaults()
@@ -63,7 +63,7 @@ func EnsureBuckets(ctx context.Context, js jetstream.JetStream, opts BucketOptio
 	if err != nil {
 		return nil, err
 	}
-	micro, err := ensureBucket(ctx, js, BucketMicroConfig, opts)
+	micro, err := ensureBucket(ctx, js, BucketServiceSettings, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +73,11 @@ func EnsureBuckets(ctx context.Context, js jetstream.JetStream, opts BucketOptio
 	}
 
 	return &Buckets{
-		flags:        flags,
-		microConfig:  micro,
-		localization: loc,
-		js:           js,
-		opts:         opts,
+		flags:           flags,
+		serviceSettings: micro,
+		localization:    loc,
+		js:              js,
+		opts:            opts,
 	}, nil
 }
 
@@ -101,7 +101,7 @@ func (b *Buckets) Ensure(ctx context.Context) error {
 	}
 
 	b.mu.Lock()
-	b.flags, b.microConfig, b.localization = fresh.flags, fresh.microConfig, fresh.localization
+	b.flags, b.serviceSettings, b.localization = fresh.flags, fresh.serviceSettings, fresh.localization
 	b.mu.Unlock()
 	return nil
 }
@@ -115,8 +115,8 @@ func (b *Buckets) byName(name string) (jetstream.KeyValue, error) {
 	switch name {
 	case BucketFlags:
 		kv = b.flags
-	case BucketMicroConfig:
-		kv = b.microConfig
+	case BucketServiceSettings:
+		kv = b.serviceSettings
 	case BucketLocalization:
 		kv = b.localization
 	default:

@@ -51,7 +51,7 @@ func exampleControlPlane() (url string, stop func()) {
 
 	pub := messaging.NewPublisher(buckets)
 	must(pub.PublishFlag(ctx, 3, "search_v2", messaging.FlagPayload{Enabled: true, Value: "on"}))
-	must(pub.PublishMicroConfig(ctx, 3, 1, json.RawMessage(`{"timeout":30}`)))
+	must(pub.PublishServiceSettings(ctx, 3, 1, json.RawMessage(`{"timeout":30}`)))
 	must(pub.PublishLocalization(ctx, 3, 1, "pt-BR", json.RawMessage(`{"catalog.title":"Catálogo"}`)))
 
 	return srv.ClientURL(), func() {
@@ -89,7 +89,7 @@ func TestScopedClientIgnoresOtherServices(t *testing.T) {
 		t.Fatalf("publish flag: %v", err)
 	}
 	for _, ms := range []int64{1, 2} {
-		if err := pub.PublishMicroConfig(ctx, env, ms, json.RawMessage(`{"timeout":30}`)); err != nil {
+		if err := pub.PublishServiceSettings(ctx, env, ms, json.RawMessage(`{"timeout":30}`)); err != nil {
 			t.Fatalf("publish micro %d: %v", ms, err)
 		}
 		if err := pub.PublishLocalization(ctx, env, ms, "pt-BR", json.RawMessage(`{"a":"b"}`)); err != nil {
@@ -113,24 +113,24 @@ func TestScopedClientIgnoresOtherServices(t *testing.T) {
 	}
 
 	// Own config and locale bundle are cached.
-	if _, ok := cc.MicroSettings(1); !ok {
-		t.Error("own MICROCONFIG should be cached")
+	if _, ok := cc.ServiceSettings(1); !ok {
+		t.Error("own SERVICESETTINGS should be cached")
 	}
 	if _, ok := cc.Translate(1, "pt-BR", "a"); !ok {
 		t.Error("own localization should be cached")
 	}
 
 	// The other service's config is neither cached nor readable.
-	if _, ok := cc.MicroSettings(2); ok {
-		t.Error("service 2's MICROCONFIG must not be cached by a client scoped to 1")
+	if _, ok := cc.ServiceSettings(2); ok {
+		t.Error("service 2's SERVICESETTINGS must not be cached by a client scoped to 1")
 	}
 	if _, ok := cc.Translate(2, "pt-BR", "a"); ok {
 		t.Error("service 2's localization must not be cached by a client scoped to 1")
 	}
 
 	snap := cc.Snapshot()
-	if _, ok := snap.Micro[2]; ok {
-		t.Errorf("snapshot leaked service 2 micro: %v", snap.Micro)
+	if _, ok := snap.ServiceSettings[2]; ok {
+		t.Errorf("snapshot leaked service 2 micro: %v", snap.ServiceSettings)
 	}
 	if _, ok := snap.Localization[2]; ok {
 		t.Errorf("snapshot leaked service 2 localization: %v", snap.Localization)
@@ -171,7 +171,7 @@ func TestFleetWideClientStillSeesEverything(t *testing.T) {
 
 	const env = int64(3)
 	for _, ms := range []int64{1, 2} {
-		if err := pub.PublishMicroConfig(ctx, env, ms, json.RawMessage(`{"timeout":30}`)); err != nil {
+		if err := pub.PublishServiceSettings(ctx, env, ms, json.RawMessage(`{"timeout":30}`)); err != nil {
 			t.Fatalf("publish micro %d: %v", ms, err)
 		}
 	}
@@ -183,7 +183,7 @@ func TestFleetWideClientStillSeesEverything(t *testing.T) {
 	defer cc.Close()
 
 	for _, ms := range []int64{1, 2} {
-		if _, ok := cc.MicroSettings(ms); !ok {
+		if _, ok := cc.ServiceSettings(ms); !ok {
 			t.Errorf("fleet-wide client should cache service %d", ms)
 		}
 	}
@@ -241,7 +241,7 @@ func TestHTTPFallbackColdStart(t *testing.T) {
 	if !cc.FlagEnabled("search_v2") {
 		t.Error("flag should have been hydrated over HTTP")
 	}
-	if s, ok := cc.MicroSettings(1); !ok || string(s) != `{"timeout":30}` {
+	if s, ok := cc.ServiceSettings(1); !ok || string(s) != `{"timeout":30}` {
 		t.Errorf("micro settings = %s, %v", s, ok)
 	}
 	if tr, ok := cc.Translate(1, "pt-BR", "a"); !ok || tr != "b" {
@@ -283,7 +283,7 @@ func TestHTTPFallbackNotUsedWhenKVIsWarm(t *testing.T) {
 		t.Fatalf("ensure buckets: %v", err)
 	}
 	pub := messaging.NewPublisher(buckets)
-	if err := pub.PublishMicroConfig(ctx, 3, 1, json.RawMessage(`{"timeout":30}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, 3, 1, json.RawMessage(`{"timeout":30}`)); err != nil {
 		t.Fatalf("publish micro: %v", err)
 	}
 

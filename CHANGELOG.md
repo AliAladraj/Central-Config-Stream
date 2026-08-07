@@ -15,6 +15,55 @@ that only lists wins is a changelog you have to check the code against anyway.
 
 ## [Unreleased]
 
+### Changed — breaking
+
+One concept was called four things: `MICROCONFIG` in KV, `microconfig` in the Go
+packages, `MicroSettings()` on the client, and appsettings in prose. It is
+**service settings** now, and the rename reaches the wire rather than stopping
+at the source, because a name that is only consistent internally has not been
+made consistent for anyone who has to integrate against it.
+
+This breaks consumers on both axes, at compile time and at run time. Read the
+upgrade note below before taking it.
+
+- **The KV bucket `MICROCONFIG` is now `SERVICESETTINGS`.** A consumer watching
+  the old bucket keeps whatever it had cached and receives nothing further — the
+  bucket it is watching stops being written to, which is the quiet failure this
+  project exists to prevent, so it is stated plainly here rather than left to be
+  discovered. The key layout inside the bucket is unchanged:
+  `{environmentId}.{microserviceId}`, one whole settings tree per value.
+- **`pkg/configclient` renames what it exposes.** `Client.MicroSettings()` is
+  `Client.ServiceSettings()`. On `Snapshot`, the `Micro` field is
+  `ServiceSettings` and serialises as `serviceSettings` rather than `micro`, and
+  the same rename applies to the `Counts` struct. Behaviour is identical; only
+  the names moved.
+- **`GET /inventory` renames one field.** `microConfigs` is `serviceSettings`.
+  Every other route, request body and response shape is untouched — in
+  particular `settingsJson` keeps its name, and `/configs` keeps its path.
+
+**Upgrading.** The database is the source of truth and needs no migration; no
+table or column carried the old name. On first start after the upgrade the
+service creates `SERVICESETTINGS` and the reconciler republishes every settings
+row into it from the database, so the new bucket is correct without operator
+action — verified on the local stack, where it repopulated within one reconcile
+interval. The old `MICROCONFIG` bucket is *not* removed, because deleting data
+on a version bump is not a thing this should do quietly. It is orphaned once
+every consumer is upgraded, and you delete it yourself:
+
+```bash
+nats kv del MICROCONFIG --force
+```
+
+Upgrade consumers before deleting it, not after: a consumer still on the old
+client is reading that bucket, and it is the only thing still feeding it.
+
+### Added
+
+- `GET /audit` accepts `environmentId`, so the audit log can be narrowed to one
+  environment. It only ever narrows — a scoped token asking for an environment
+  outside its scope gets an empty array rather than the rows, and rather than a
+  403 that would confirm the environment exists.
+
 ## [0.1.1] — 2026-08-07
 
 ### Fixed

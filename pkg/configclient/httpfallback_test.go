@@ -132,7 +132,7 @@ func TestFallbackSendsBearerTokenOnEveryRequest(t *testing.T) {
 	if !cc.FlagEnabled("search_v2") {
 		t.Error("flag should have been hydrated over HTTP")
 	}
-	if _, ok := cc.MicroSettings(1); !ok {
+	if _, ok := cc.ServiceSettings(1); !ok {
 		t.Error("appsettings should have been hydrated over HTTP")
 	}
 	if _, ok := cc.Translate(1, "pt-BR", "a"); !ok {

@@ -83,13 +83,16 @@ export function Tabs({ tabs, active, onSelect }) {
 // — which reads as "this obeys it". Three views were silently global that way,
 // so the note is required rather than optional: either name the environment in
 // force or say plainly that this table is not scoped by one.
+// The visible text stays short enough to sit on the toolbar's own line — the
+// reason is a tooltip, because spelling it out inline wrapped the toolbar onto
+// a third row and pushed the table down for a sentence nobody reads twice.
 export function ScopeNote({ envId, envName, global, reason }) {
   if (global) {
-    return <span className="scope-note t" title={reason}>every environment{reason ? ` — ${reason}` : ''}</span>
+    return <span className="scope-note t" title={reason}>scope: every environment</span>
   }
   return (
-    <span className="scope-note t">
-      {envId ? <>environment <strong>{envName(envId)}</strong> (id {envId}), from the header</> : 'all environments, from the header'}
+    <span className="scope-note t" title="Set by the Editing switcher in the header.">
+      scope: {envId ? <strong>{envName(envId)}</strong> : 'all environments'}
     </span>
   )
 }

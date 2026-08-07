@@ -109,15 +109,15 @@ func TestSQLiteStackEndToEnd(t *testing.T) {
 		select {
 		case got := <-updates:
 			if got == "FLAGS|1.search_v2" {
-				goto microconfig
+				goto servicesettings
 			}
 		case <-deadline:
 			t.Fatal("no FLAGS update delivered to the consumer")
 		}
 	}
 
-microconfig:
-	// Microconfig travels the same path and lands as raw JSON.
+servicesettings:
+	// ServiceSettings travels the same path and lands as raw JSON.
 	settings := `{"id":200,"microserviceId":1,"environmentId":1,"settingsJson":{"timeoutMs":9000}}`
 	mreq, err := http.NewRequestWithContext(ctx, http.MethodPut,
 		api.URL+"/configs/values", strings.NewReader(settings))
@@ -129,15 +129,15 @@ microconfig:
 
 	mresp, err := api.Client().Do(mreq)
 	if err != nil {
-		t.Fatalf("put microconfig: %v", err)
+		t.Fatalf("put servicesettings: %v", err)
 	}
 	defer mresp.Body.Close()
 	if mresp.StatusCode != http.StatusOK {
-		t.Fatalf("put microconfig: status %d", mresp.StatusCode)
+		t.Fatalf("put servicesettings: status %d", mresp.StatusCode)
 	}
 
-	waitFor(t, "microconfig pushed to consumer", func() bool {
-		raw, ok := cc.MicroSettings(1)
+	waitFor(t, "servicesettings pushed to consumer", func() bool {
+		raw, ok := cc.ServiceSettings(1)
 		if !ok {
 			return false
 		}

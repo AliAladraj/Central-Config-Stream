@@ -1,5 +1,5 @@
-// Package microconfig owns per-service appsettings: one JSON tree per
-// microservice and environment, published to the MICROCONFIG KV bucket at key
+// Package servicesettings owns per-service appsettings: one JSON tree per
+// microservice and environment, published to the SERVICESETTINGS KV bucket at key
 // "{envID}.{microserviceID}". The same concept is /configs on the API and
 // SETTINGS_JSON in the database.
 //
@@ -12,7 +12,7 @@
 // Settings size is checked against the KV value limit before the database
 // write, so an oversized tree cannot be committed as a row that no consumer
 // will ever receive.
-package microconfig
+package servicesettings
 
 import "errors"
 

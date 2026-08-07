@@ -1,4 +1,4 @@
-package microconfig
+package servicesettings
 
 import (
 	"bytes"
@@ -57,7 +57,7 @@ func (s *Service) UpdateMicroserviceConfig(ctx context.Context, req Microservice
 	}
 
 	// 2. Write-through to KV. Best-effort: reconciler heals drift on failure.
-	if err := s.pub.PublishMicroConfig(ctx, updated.EnvironmentID, updated.MicroserviceID, updated.SettingsJSON); err != nil {
+	if err := s.pub.PublishServiceSettings(ctx, updated.EnvironmentID, updated.MicroserviceID, updated.SettingsJSON); err != nil {
 		logPublishFailure(ctx, updated.EnvironmentID, updated.MicroserviceID, err)
 	}
 	s.purgeMoved(ctx, previous, updated)
@@ -106,7 +106,7 @@ func (s *Service) CreateMicroserviceConfig(ctx context.Context, req Microservice
 	}
 
 	// 2. Write-through to KV. Best-effort: reconciler heals drift on failure.
-	if err := s.pub.PublishMicroConfig(ctx, created.EnvironmentID, created.MicroserviceID, created.SettingsJSON); err != nil {
+	if err := s.pub.PublishServiceSettings(ctx, created.EnvironmentID, created.MicroserviceID, created.SettingsJSON); err != nil {
 		logPublishFailure(ctx, created.EnvironmentID, created.MicroserviceID, err)
 	}
 
@@ -126,9 +126,9 @@ func (s *Service) DeleteMicroserviceConfig(ctx context.Context, id int64) error 
 		return err
 	}
 
-	key := messaging.MicroKey(removed.EnvironmentID, removed.MicroserviceID)
-	if err := s.pub.DeleteKey(ctx, messaging.BucketMicroConfig, key); err != nil {
-		obs.FromContext(ctx, "microconfig").Error("purge settings failed (will reconcile)",
+	key := messaging.ServiceSettingsKey(removed.EnvironmentID, removed.MicroserviceID)
+	if err := s.pub.DeleteKey(ctx, messaging.BucketServiceSettings, key); err != nil {
+		obs.FromContext(ctx, "servicesettings").Error("purge settings failed (will reconcile)",
 			slog.String("kv.key", key), obs.Err(err))
 	}
 
@@ -183,7 +183,7 @@ func (s *Service) DeleteEnvironment(ctx context.Context, id int64) error {
 // succeeded — the database has the row — so this is the only trace of the drift the
 // reconciler will have to repair.
 func logPublishFailure(ctx context.Context, environmentID, microserviceID int64, err error) {
-	obs.FromContext(ctx, "microconfig").Error("publish settings failed (will reconcile)",
+	obs.FromContext(ctx, "servicesettings").Error("publish settings failed (will reconcile)",
 		slog.Int64("environment.id", environmentID),
 		slog.Int64("microservice.id", microserviceID),
 		obs.Err(err))
@@ -194,12 +194,12 @@ func logPublishFailure(ctx context.Context, environmentID, microserviceID int64,
 // full reconcile sweep, and until then consumers in the old environment keep
 // the settings they last saw.
 func (s *Service) purgeMoved(ctx context.Context, previous, updated *MicroserviceAppSettings) {
-	old := messaging.MicroKey(previous.EnvironmentID, previous.MicroserviceID)
-	if old == messaging.MicroKey(updated.EnvironmentID, updated.MicroserviceID) {
+	old := messaging.ServiceSettingsKey(previous.EnvironmentID, previous.MicroserviceID)
+	if old == messaging.ServiceSettingsKey(updated.EnvironmentID, updated.MicroserviceID) {
 		return
 	}
-	if err := s.pub.DeleteKey(ctx, messaging.BucketMicroConfig, old); err != nil {
-		obs.FromContext(ctx, "microconfig").Error("purge moved settings failed (will reconcile)",
+	if err := s.pub.DeleteKey(ctx, messaging.BucketServiceSettings, old); err != nil {
+		obs.FromContext(ctx, "servicesettings").Error("purge moved settings failed (will reconcile)",
 			slog.String("kv.key", old), obs.Err(err))
 	}
 }

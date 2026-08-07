@@ -25,8 +25,8 @@ import (
 	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
 	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
 	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
 // appLog is the startup/lifecycle logger; request-scoped work uses the logger
@@ -90,7 +90,7 @@ func NewApp(cfg *Config) (*App, error) {
 
 	// Services + handlers.
 	flagsHandler := flagsconfig.NewHandler(flagsconfig.NewService(flagsRepo, pub))
-	microHandler := microconfig.NewHandler(microconfig.NewService(microRepo, pub))
+	microHandler := servicesettings.NewHandler(servicesettings.NewService(microRepo, pub))
 	locHandler := localization.NewHandler(localization.NewService(locRepo, pub))
 
 	warnIfAuthDisabled(tokens)
@@ -215,7 +215,7 @@ type (
 		flagsLister
 	}
 	microRepository interface {
-		microconfig.Repository
+		servicesettings.Repository
 		microLister
 	}
 	locRepository interface {
@@ -227,11 +227,11 @@ type (
 func newRepositories(cfg *Config, db *sql.DB) (flagsRepository, microRepository, locRepository) {
 	if strings.EqualFold(cfg.DBDriver, "sqlite") {
 		return flagsconfig.NewSQLiteRepository(db),
-			microconfig.NewSQLiteRepository(db),
+			servicesettings.NewSQLiteRepository(db),
 			localization.NewSQLiteRepository(db)
 	}
 	return flagsconfig.NewPostgresRepository(db),
-		microconfig.NewPostgresRepository(db),
+		servicesettings.NewPostgresRepository(db),
 		localization.NewPostgresRepository(db)
 }
 
@@ -340,7 +340,7 @@ type flagsLister interface {
 }
 
 type microLister interface {
-	ListAllForReconcile(ctx context.Context, since time.Time) ([]microconfig.MicroserviceAppSettings, error)
+	ListAllForReconcile(ctx context.Context, since time.Time) ([]servicesettings.MicroserviceAppSettings, error)
 }
 
 type locLister interface {
@@ -376,8 +376,8 @@ func (s *flagsReconcileSource) Resync(ctx context.Context, pub messaging.ConfigP
 
 type microReconcileSource struct{ repo microLister }
 
-func (s *microReconcileSource) Name() string   { return "microconfig" }
-func (s *microReconcileSource) Bucket() string { return messaging.BucketMicroConfig }
+func (s *microReconcileSource) Name() string   { return "servicesettings" }
+func (s *microReconcileSource) Bucket() string { return messaging.BucketServiceSettings }
 func (s *microReconcileSource) Resync(ctx context.Context, pub messaging.ConfigPublisher, since time.Time) (messaging.ResyncResult, error) {
 	rows, err := s.repo.ListAllForReconcile(ctx, since)
 	if err != nil {
@@ -385,8 +385,8 @@ func (s *microReconcileSource) Resync(ctx context.Context, pub messaging.ConfigP
 	}
 	res := messaging.ResyncResult{Keys: make([]string, 0, len(rows))}
 	for _, row := range rows {
-		res.Publish(s.Name(), messaging.MicroKey(row.EnvironmentID, row.MicroserviceID),
-			pub.PublishMicroConfig(ctx, row.EnvironmentID, row.MicroserviceID, row.SettingsJSON))
+		res.Publish(s.Name(), messaging.ServiceSettingsKey(row.EnvironmentID, row.MicroserviceID),
+			pub.PublishServiceSettings(ctx, row.EnvironmentID, row.MicroserviceID, row.SettingsJSON))
 	}
 	return res, nil
 }

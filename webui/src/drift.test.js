@@ -11,7 +11,7 @@ const OTHER = 2
 
 const base = {
   watchedEnvId: WATCHED,
-  snapshot: { environmentId: WATCHED, flags: {}, micro: {}, localization: {} },
+  snapshot: { environmentId: WATCHED, flags: {}, serviceSettings: {}, localization: {} },
   flagValues: [],
   configs: [],
   localization: [],
@@ -28,7 +28,7 @@ describe('computeDrift', () => {
       snapshot: {
         environmentId: WATCHED,
         flags: { search_v2: { value: 'on', enabled: true } },
-        micro: { 7: { db: { pool: 4 } } },
+        serviceSettings: { 7: { db: { pool: 4 } } },
         localization: { 7: { 'pt-BR': { hello: 'olá' } } },
       },
       flagValues: [flagRow()],
@@ -87,24 +87,24 @@ describe('computeDrift', () => {
   it('compares appsettings trees by value, not by identity', () => {
     const same = computeDrift({
       ...base,
-      snapshot: { ...base.snapshot, micro: { 7: { db: { pool: 4 } } } },
+      snapshot: { ...base.snapshot, serviceSettings: { 7: { db: { pool: 4 } } } },
       configs: [configRow()],
     })
     expect(same.issues).toEqual([])
 
     const nested = computeDrift({
       ...base,
-      snapshot: { ...base.snapshot, micro: { 7: { db: { pool: 8 } } } },
+      snapshot: { ...base.snapshot, serviceSettings: { 7: { db: { pool: 8 } } } },
       configs: [configRow()],
     })
     expect(nested.issues).toHaveLength(1)
-    expect(nested.issues[0]).toMatchObject({ domain: 'microconfig', key: '7', kind: 'value-differs' })
+    expect(nested.issues[0]).toMatchObject({ domain: 'servicesettings', key: '7', kind: 'value-differs' })
   })
 
   it('does not mistake an empty cached settings object for a missing one', () => {
     const d = computeDrift({
       ...base,
-      snapshot: { ...base.snapshot, micro: { 7: {} } },
+      snapshot: { ...base.snapshot, serviceSettings: { 7: {} } },
       configs: [configRow({ settingsJson: {} })],
     })
     expect(d.issues).toEqual([])

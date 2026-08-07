@@ -1,4 +1,4 @@
-package microconfig_test
+package servicesettings_test
 
 import (
 	"encoding/json"
@@ -9,16 +9,16 @@ import (
 	"testing"
 
 	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
 // The handler is wired onto the same SQLite-backed service the service tests
 // use rather than onto a stub: the status codes below are only worth asserting
 // if the errors reaching writeErr are the ones a real request produces.
-func newTestHandler(t *testing.T) (*microconfig.Handler, *capturePub) {
+func newTestHandler(t *testing.T) (*servicesettings.Handler, *capturePub) {
 	t.Helper()
 	svc, pub, _ := newTestService(t)
-	return microconfig.NewHandler(svc), pub
+	return servicesettings.NewHandler(svc), pub
 }
 
 // call invokes one handler directly. The routes live in internal/app/config.go
@@ -30,9 +30,9 @@ func call(h http.HandlerFunc, r *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-func decodeConfig(t *testing.T, rec *httptest.ResponseRecorder) microconfig.MicroserviceAppSettings {
+func decodeConfig(t *testing.T, rec *httptest.ResponseRecorder) servicesettings.MicroserviceAppSettings {
 	t.Helper()
-	var cfg microconfig.MicroserviceAppSettings
+	var cfg servicesettings.MicroserviceAppSettings
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
 	}
@@ -90,7 +90,7 @@ func TestConfigsAndConfigValuesAddressDifferentRows(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get microservice: expected 200, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	var ms microconfig.Microservice
+	var ms servicesettings.Microservice
 	if err := json.Unmarshal(rec.Body.Bytes(), &ms); err != nil {
 		t.Fatalf("decode microservice: %v (%s)", err, rec.Body.String())
 	}
@@ -262,7 +262,7 @@ func TestDeleteMicroserviceConfigIs204ThenPurgesAndIs404(t *testing.T) {
 	if rec := call(h.DeleteMicroserviceConfig, req); rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	if len(pub.deleted) != 1 || pub.deleted[0] != "MICROCONFIG|1.1" {
+	if len(pub.deleted) != 1 || pub.deleted[0] != "SERVICESETTINGS|1.1" {
 		t.Fatalf("delete did not purge the KV key: %v", pub.deleted)
 	}
 	if rec := call(h.DeleteMicroserviceConfig, req); rec.Code != http.StatusNotFound {
@@ -323,7 +323,7 @@ func TestListMicroserviceConfigsValidatesItsQuery(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	var rows []microconfig.MicroserviceAppSettings
+	var rows []servicesettings.MicroserviceAppSettings
 	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode list: %v (%s)", err, rec.Body.String())
 	}

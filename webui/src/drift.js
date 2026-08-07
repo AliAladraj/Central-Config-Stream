@@ -45,26 +45,26 @@ export function computeDrift({ watchedEnvId, snapshot, flagValues, configs, loca
   }
 
   // ── appsettings: KV key {env}.{microserviceId}
-  const cacheMicro = snapshot.micro ?? {}
-  const dbMicro = new Map()
+  const cachedSettings = snapshot.serviceSettings ?? {}
+  const dbSettings = new Map()
   for (const row of configs) {
     if (row.environmentId !== watchedEnvId) { outOfScope++; continue }
-    dbMicro.set(String(row.microserviceId), row)
+    dbSettings.set(String(row.microserviceId), row)
   }
-  for (const [msId, row] of dbMicro) {
+  for (const [msId, row] of dbSettings) {
     compared++
-    const cached = cacheMicro[msId]
+    const cached = cachedSettings[msId]
     if (cached === undefined) {
-      issues.push(mk('microconfig', msId, 'missing-in-cache', row.id,
+      issues.push(mk('servicesettings', msId, 'missing-in-cache', row.id,
         `microservice ${msId} has appsettings in the database that the consumer has not received`))
     } else if (!same(cached, row.settingsJson)) {
-      issues.push(mk('microconfig', msId, 'value-differs', row.id,
+      issues.push(mk('servicesettings', msId, 'value-differs', row.id,
         'the cached appsettings tree differs from the stored one'))
     }
   }
-  for (const msId of Object.keys(cacheMicro)) {
-    if (!dbMicro.has(msId)) {
-      issues.push(mk('microconfig', msId, 'missing-in-database', null,
+  for (const msId of Object.keys(cachedSettings)) {
+    if (!dbSettings.has(msId)) {
+      issues.push(mk('servicesettings', msId, 'missing-in-database', null,
         'the consumer holds appsettings for a microservice with no row in this environment'))
     }
   }

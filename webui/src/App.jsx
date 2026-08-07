@@ -24,7 +24,7 @@ const NAV = [
     group: 'Configure',
     items: [
       { id: 'flags', label: 'Flags', hint: 'definitions and the env matrix' },
-      { id: 'configs', label: 'Appsettings', hint: 'per service, per env' },
+      { id: 'configs', label: 'Service settings', hint: 'per service, per env' },
       { id: 'localization', label: 'Localization', hint: 'translation bundles' },
     ],
   },

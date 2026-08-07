@@ -7,7 +7,7 @@
 //
 // Scope: set Options.MicroserviceID. The client then watches only the keys the
 // service actually needs — every flag in its environment (flags are env-wide by
-// design), its own MICROCONFIG key, and its own locale bundles. Leaving it unset
+// design), its own SERVICESETTINGS key, and its own locale bundles. Leaving it unset
 // selects the fleet-wide watch; see Options.MicroserviceID.
 //
 // Cold start: if NATS is unreachable at boot, Options.HTTPFallback can hydrate
@@ -32,9 +32,9 @@ import (
 )
 
 const (
-	bucketFlags        = "FLAGS"
-	bucketMicroConfig  = "MICROCONFIG"
-	bucketLocalization = "LOCALIZATION"
+	bucketFlags           = "FLAGS"
+	bucketServiceSettings = "SERVICESETTINGS"
+	bucketLocalization    = "LOCALIZATION"
 )
 
 // FlagPayload mirrors the value central-config stores in the FLAGS bucket.
@@ -51,7 +51,7 @@ type Options struct {
 	EnvironmentID int64  // required, the environment this service runs in
 
 	// MicroserviceID is the service this client runs inside. When set, the
-	// client watches only "{env}.{id}" on MICROCONFIG and "{env}.{id}.>" on
+	// client watches only "{env}.{id}" on SERVICESETTINGS and "{env}.{id}.>" on
 	// LOCALIZATION, so its memory grows with its own config rather than with
 	// the size of the fleet. FLAGS is still watched env-wide because flags are
 	// shared across services.
@@ -64,7 +64,7 @@ type Options struct {
 	// visible rather than silent. It is the zero value because the field is
 	// optional, not because it is the setting to reach for.
 	//
-	// When it is set, MicroSettings and Translate for any *other* microservice
+	// When it is set, ServiceSettings and Translate for any *other* microservice
 	// return false (that data is not watched) and increment
 	// Status().OutOfScopeReads, so an out-of-scope read shows up as a reported
 	// mistake instead of an empty result that looks like "no config yet".
@@ -85,7 +85,7 @@ type Options struct {
 	Logger *slog.Logger
 
 	// OnChange, if set, is called after each applied KV update: during the
-	// initial snapshot and for every later push. bucket is FLAGS, MICROCONFIG
+	// initial snapshot and for every later push. bucket is FLAGS, SERVICESETTINGS
 	// or LOCALIZATION; key is the full KV key; value is nil for a delete.
 	// It runs on the watcher goroutine, so it must not block.
 	//
@@ -232,7 +232,7 @@ func (c *Client) connectAndWatch(ctx context.Context, opts Options) error {
 	if err := c.startWatch(ctx, watchCtx, js, bucketFlags, envPrefix, c.applyFlag); err != nil {
 		return err
 	}
-	if err := c.startWatch(ctx, watchCtx, js, bucketMicroConfig, microPrefix, c.applyMicro); err != nil {
+	if err := c.startWatch(ctx, watchCtx, js, bucketServiceSettings, microPrefix, c.applyServiceSettings); err != nil {
 		return err
 	}
 	if err := c.startWatch(ctx, watchCtx, js, bucketLocalization, locPrefix, c.applyLoc); err != nil {
@@ -341,7 +341,7 @@ func (c *Client) applyFlag(key string, value []byte) {
 	c.flags[flagKey] = p
 }
 
-func (c *Client) applyMicro(key string, value []byte) {
+func (c *Client) applyServiceSettings(key string, value []byte) {
 	msID, err := strconv.ParseInt(c.trimEnv(key), 10, 64)
 	if err != nil {
 		return
@@ -397,11 +397,11 @@ func (c *Client) FlagValue(flagKey string) (string, bool) {
 	return p.Value, ok
 }
 
-// MicroSettings returns the appsettings JSON blob for a microservice. If the
+// ServiceSettings returns the appsettings JSON blob for a microservice. If the
 // client is scoped to one microservice (Options.MicroserviceID) and a different
 // one is asked for, this returns false and counts an out-of-scope read: that
 // data is not watched, so any cached copy would be a lie.
-func (c *Client) MicroSettings(microserviceID int64) (json.RawMessage, bool) {
+func (c *Client) ServiceSettings(microserviceID int64) (json.RawMessage, bool) {
 	if !c.inScope(microserviceID) {
 		c.outOfScope.Add(1)
 		return nil, false
@@ -414,7 +414,7 @@ func (c *Client) MicroSettings(microserviceID int64) (json.RawMessage, bool) {
 
 // Translate resolves a single localization key for a service+locale. Returns
 // the translated string and whether it was found. Out-of-scope microservices
-// are reported the same way as in MicroSettings.
+// are reported the same way as in ServiceSettings.
 func (c *Client) Translate(microserviceID int64, locale, key string) (string, bool) {
 	if !c.inScope(microserviceID) {
 		c.outOfScope.Add(1)
@@ -445,10 +445,10 @@ func (c *Client) bundle(microserviceID int64, locale string) (json.RawMessage, b
 // Snapshot is a point-in-time copy of everything the client has cached for its
 // environment. Intended for diagnostics and admin views, not the hot path.
 type Snapshot struct {
-	EnvironmentID int64                                `json:"environmentId"`
-	Flags         map[string]FlagPayload               `json:"flags"`
-	Micro         map[int64]json.RawMessage            `json:"micro"`
-	Localization  map[int64]map[string]json.RawMessage `json:"localization"`
+	EnvironmentID   int64                                `json:"environmentId"`
+	Flags           map[string]FlagPayload               `json:"flags"`
+	ServiceSettings map[int64]json.RawMessage            `json:"serviceSettings"`
+	Localization    map[int64]map[string]json.RawMessage `json:"localization"`
 }
 
 // Snapshot returns a copy of the current cache.
@@ -457,16 +457,16 @@ func (c *Client) Snapshot() Snapshot {
 	defer c.mu.RUnlock()
 
 	s := Snapshot{
-		EnvironmentID: c.env,
-		Flags:         make(map[string]FlagPayload, len(c.flags)),
-		Micro:         make(map[int64]json.RawMessage, len(c.micro)),
-		Localization:  make(map[int64]map[string]json.RawMessage, len(c.loc)),
+		EnvironmentID:   c.env,
+		Flags:           make(map[string]FlagPayload, len(c.flags)),
+		ServiceSettings: make(map[int64]json.RawMessage, len(c.micro)),
+		Localization:    make(map[int64]map[string]json.RawMessage, len(c.loc)),
 	}
 	for k, v := range c.flags {
 		s.Flags[k] = v
 	}
 	for k, v := range c.micro {
-		s.Micro[k] = v
+		s.ServiceSettings[k] = v
 	}
 	for msID, locales := range c.loc {
 		copied := make(map[string]json.RawMessage, len(locales))
@@ -493,9 +493,9 @@ type Status struct {
 	LastError        string `json:"lastError,omitempty"`
 	OutOfScopeReads  int64  `json:"outOfScopeReads"`
 	Counts           struct {
-		Flags        int `json:"flags"`
-		Micro        int `json:"micro"`
-		Localization int `json:"localization"`
+		Flags           int `json:"flags"`
+		ServiceSettings int `json:"serviceSettings"`
+		Localization    int `json:"localization"`
 	} `json:"counts"`
 }
 
@@ -522,7 +522,7 @@ func (c *Client) Status() Status {
 	s.Connected = c.nc != nil && c.nc.IsConnected()
 	s.Watching = c.watch
 	s.Counts.Flags = len(c.flags)
-	s.Counts.Micro = len(c.micro)
+	s.Counts.ServiceSettings = len(c.micro)
 	s.Counts.Localization = len(c.loc)
 	return s
 }

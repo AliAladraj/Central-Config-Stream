@@ -49,7 +49,7 @@ func TestPublisherListAndDeleteKeys(t *testing.T) {
 	pub, ctx := newTestPublisher(t)
 
 	// An untouched bucket lists nothing and must not error.
-	keys, err := pub.ListKeys(ctx, BucketMicroConfig)
+	keys, err := pub.ListKeys(ctx, BucketServiceSettings)
 	if err != nil {
 		t.Fatalf("list keys on an empty bucket: %v", err)
 	}
@@ -211,26 +211,26 @@ func TestPublishSkipsIdenticalRawValues(t *testing.T) {
 	settings := json.RawMessage(`{"timeoutMs":30}`)
 	bundle := json.RawMessage(`{"catalog.title":"Catalog"}`)
 	for i := 0; i < 2; i++ {
-		if err := pub.PublishMicroConfig(ctx, 1, 3, settings); err != nil {
-			t.Fatalf("publish microconfig: %v", err)
+		if err := pub.PublishServiceSettings(ctx, 1, 3, settings); err != nil {
+			t.Fatalf("publish servicesettings: %v", err)
 		}
 		if err := pub.PublishLocalization(ctx, 1, 3, "en-US", bundle); err != nil {
 			t.Fatalf("publish localization: %v", err)
 		}
 	}
 
-	if got := revisionOf(t, pub, ctx, BucketMicroConfig, MicroKey(1, 3)); got != 1 {
-		t.Errorf("microconfig revision = %d, want 1 (second publish was identical)", got)
+	if got := revisionOf(t, pub, ctx, BucketServiceSettings, ServiceSettingsKey(1, 3)); got != 1 {
+		t.Errorf("servicesettings revision = %d, want 1 (second publish was identical)", got)
 	}
 	if got := revisionOf(t, pub, ctx, BucketLocalization, LocalizationKey(1, 3, "en-US")); got != 1 {
 		t.Errorf("localization revision = %d, want 1 (second publish was identical)", got)
 	}
 
-	if err := pub.PublishMicroConfig(ctx, 1, 3, json.RawMessage(`{"timeoutMs":60}`)); err != nil {
-		t.Fatalf("publish changed microconfig: %v", err)
+	if err := pub.PublishServiceSettings(ctx, 1, 3, json.RawMessage(`{"timeoutMs":60}`)); err != nil {
+		t.Fatalf("publish changed servicesettings: %v", err)
 	}
-	if got := revisionOf(t, pub, ctx, BucketMicroConfig, MicroKey(1, 3)); got != 2 {
-		t.Errorf("microconfig revision = %d, want 2 after a real change", got)
+	if got := revisionOf(t, pub, ctx, BucketServiceSettings, ServiceSettingsKey(1, 3)); got != 2 {
+		t.Errorf("servicesettings revision = %d, want 2 after a real change", got)
 	}
 }
 
@@ -338,36 +338,36 @@ func TestFullSweepOverUnchangedDataPublishesNothing(t *testing.T) {
 func TestPublishFailureIsCounted(t *testing.T) {
 	pub, ctx := newTestPublisher(t)
 
-	attempts := obs.KVPublishAttempts.Value("bucket", BucketMicroConfig)
-	failures := obs.KVPublishFailures.Value("bucket", BucketMicroConfig)
-	success := obs.KVPublishSuccess.Value("bucket", BucketMicroConfig)
+	attempts := obs.KVPublishAttempts.Value("bucket", BucketServiceSettings)
+	failures := obs.KVPublishFailures.Value("bucket", BucketServiceSettings)
+	success := obs.KVPublishSuccess.Value("bucket", BucketServiceSettings)
 
-	if err := pub.PublishMicroConfig(ctx, 1, 1, nil); err == nil {
+	if err := pub.PublishServiceSettings(ctx, 1, 1, nil); err == nil {
 		t.Fatal("expected a publish of empty settings to fail")
 	}
 
-	if got := obs.KVPublishFailures.Value("bucket", BucketMicroConfig); got != failures+1 {
+	if got := obs.KVPublishFailures.Value("bucket", BucketServiceSettings); got != failures+1 {
 		t.Errorf("failures = %d, want %d", got, failures+1)
 	}
-	if got := obs.KVPublishAttempts.Value("bucket", BucketMicroConfig); got != attempts+1 {
+	if got := obs.KVPublishAttempts.Value("bucket", BucketServiceSettings); got != attempts+1 {
 		t.Errorf("attempts = %d, want %d", got, attempts+1)
 	}
-	if got := obs.KVPublishSuccess.Value("bucket", BucketMicroConfig); got != success {
+	if got := obs.KVPublishSuccess.Value("bucket", BucketServiceSettings); got != success {
 		t.Errorf("success = %d, want it unchanged at %d", got, success)
 	}
 
 	// A publish that works moves the success counter instead.
-	if err := pub.PublishMicroConfig(ctx, 1, 1, json.RawMessage(`{"timeoutMs":10}`)); err != nil {
-		t.Fatalf("publish microconfig: %v", err)
+	if err := pub.PublishServiceSettings(ctx, 1, 1, json.RawMessage(`{"timeoutMs":10}`)); err != nil {
+		t.Fatalf("publish servicesettings: %v", err)
 	}
-	if got := obs.KVPublishSuccess.Value("bucket", BucketMicroConfig); got != success+1 {
+	if got := obs.KVPublishSuccess.Value("bucket", BucketServiceSettings); got != success+1 {
 		t.Errorf("success = %d, want %d", got, success+1)
 	}
 
 	rec := httptest.NewRecorder()
 	obs.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
-	want := fmt.Sprintf("centralconfig_kv_publish_failures_total{bucket=%q} %d", BucketMicroConfig, failures+1)
+	want := fmt.Sprintf("centralconfig_kv_publish_failures_total{bucket=%q} %d", BucketServiceSettings, failures+1)
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("missing %q in:\n%s", want, rec.Body.String())
 	}
@@ -380,13 +380,13 @@ func TestPublishFailureIsCounted(t *testing.T) {
 // with is one that was written against what KV actually held.
 func TestPublishResolvesAConcurrentWrite(t *testing.T) {
 	pub, ctx := newTestPublisher(t)
-	key := MicroKey(1, 3)
+	key := ServiceSettingsKey(1, 3)
 
-	if err := pub.PublishMicroConfig(ctx, 1, 3, json.RawMessage(`{"timeoutMs":10}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, 1, 3, json.RawMessage(`{"timeoutMs":10}`)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	kv, err := pub.buckets.byName(BucketMicroConfig)
+	kv, err := pub.buckets.byName(BucketServiceSettings)
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestPublishResolvesAConcurrentWrite(t *testing.T) {
 	}
 
 	// The publisher itself retries against what KV now holds and succeeds.
-	if err := pub.PublishMicroConfig(ctx, 1, 3, json.RawMessage(`{"timeoutMs":40}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, 1, 3, json.RawMessage(`{"timeoutMs":40}`)); err != nil {
 		t.Fatalf("publish after a concurrent write: %v", err)
 	}
 	entry, err = kv.Get(ctx, key)
@@ -432,7 +432,7 @@ func TestPublishResolvesAConcurrentWrite(t *testing.T) {
 func TestBucketsCarryTheValueCeiling(t *testing.T) {
 	pub, ctx := newTestPublisher(t)
 
-	kv, err := pub.buckets.byName(BucketMicroConfig)
+	kv, err := pub.buckets.byName(BucketServiceSettings)
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestBucketsCarryTheValueCeiling(t *testing.T) {
 	}
 
 	// Everything under it still publishes.
-	if err := pub.PublishMicroConfig(ctx, 1, 1, json.RawMessage(`{"a":1}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, 1, 1, json.RawMessage(`{"a":1}`)); err != nil {
 		t.Fatalf("publish inside the ceiling: %v", err)
 	}
 }
@@ -501,7 +501,7 @@ func TestListRevisionsOnAnEmptyBucketReturnsAtOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	entries, err := pub.ListRevisions(ctx, BucketMicroConfig)
+	entries, err := pub.ListRevisions(ctx, BucketServiceSettings)
 	if err != nil {
 		t.Fatalf("list revisions on an empty bucket: %v", err)
 	}
@@ -511,21 +511,21 @@ func TestListRevisionsOnAnEmptyBucketReturnsAtOnce(t *testing.T) {
 
 	// And it reports the revision each key is actually at, which is what tells
 	// a key untouched since the sweep began from one written during it.
-	if err := pub.PublishMicroConfig(ctx, 1, 3, json.RawMessage(`{"a":1}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, 1, 3, json.RawMessage(`{"a":1}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := pub.PublishMicroConfig(ctx, 1, 3, json.RawMessage(`{"a":2}`)); err != nil {
+	if err := pub.PublishServiceSettings(ctx, 1, 3, json.RawMessage(`{"a":2}`)); err != nil {
 		t.Fatalf("republish: %v", err)
 	}
 
-	entries, err = pub.ListRevisions(ctx, BucketMicroConfig)
+	entries, err = pub.ListRevisions(ctx, BucketServiceSettings)
 	if err != nil {
 		t.Fatalf("list revisions: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Key != MicroKey(1, 3) {
+	if len(entries) != 1 || entries[0].Key != ServiceSettingsKey(1, 3) {
 		t.Fatalf("unexpected entries: %+v", entries)
 	}
-	if got := revisionOf(t, pub, ctx, BucketMicroConfig, MicroKey(1, 3)); entries[0].Revision != got {
+	if got := revisionOf(t, pub, ctx, BucketServiceSettings, ServiceSettingsKey(1, 3)); entries[0].Revision != got {
 		t.Errorf("revision = %d, want %d", entries[0].Revision, got)
 	}
 }

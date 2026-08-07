@@ -30,9 +30,9 @@ import (
 // the caller's scope so the database does the paging — that is a change to the
 // three repository packages, not to this handler.
 type Inventory struct {
-	Flags        []InventoryFlag  `json:"flags"`
-	MicroConfigs []InventoryMicro `json:"microConfigs"`
-	Localization []InventoryLoc   `json:"localization"`
+	Flags           []InventoryFlag            `json:"flags"`
+	ServiceSettings []InventoryServiceSettings `json:"serviceSettings"`
+	Localization    []InventoryLoc             `json:"localization"`
 }
 
 type InventoryFlag struct {
@@ -43,7 +43,7 @@ type InventoryFlag struct {
 	Value         string `json:"value"`
 }
 
-type InventoryMicro struct {
+type InventoryServiceSettings struct {
 	ID             int64           `json:"id"`
 	MicroserviceID int64           `json:"microserviceId"`
 	EnvironmentID  int64           `json:"environmentId"`
@@ -102,7 +102,7 @@ func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	microRows, err := h.micro.ListAllForReconcile(ctx, time.Time{})
 	if err != nil {
-		obs.FromContext(ctx, "inventory").Error("list rows failed", slog.String("domain", "microconfig"), obs.Err(err))
+		obs.FromContext(ctx, "inventory").Error("list rows failed", slog.String("domain", "servicesettings"), obs.Err(err))
 		web.Error(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -111,7 +111,7 @@ func (h *inventoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !inScope(r, row.EnvironmentID) || !micro.take() {
 			continue
 		}
-		inv.MicroConfigs = append(inv.MicroConfigs, InventoryMicro{
+		inv.ServiceSettings = append(inv.ServiceSettings, InventoryServiceSettings{
 			ID:             row.ID,
 			MicroserviceID: row.MicroserviceID,
 			EnvironmentID:  row.EnvironmentID,

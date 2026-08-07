@@ -23,7 +23,7 @@ rather than in Go.
 state and counters, never configuration values. **Every other route answers
 `401` without a valid bearer token — the reads as well as the writes.** A read
 is not a lesser operation here. One anonymous `GET /configs/values` would
-otherwise hand over the whole configuration estate: every appsettings tree,
+otherwise hand over the whole configuration estate: every service settings tree,
 every bundle and every flag value, production as readily as dev.
 
 ### Named admin tokens with environment scope
@@ -112,7 +112,7 @@ The row-lookup case matters. The update handlers key off the row id and ignore
 any `environmentId` in the body, so trusting the body there would let a
 dev-scoped token send `{"id": <prod row>, "environmentId": 1}` and change
 production. The environment is therefore read back from the database before the
-scope check, and a body that disagrees does not win. The microconfig and
+scope check, and a body that disagrees does not win. The servicesettings and
 localization updates additionally *rewrite* `ENVIRONMENT_ID`, so those writes are
 checked against both the environment the row is in and the one it would move to.
 
@@ -203,7 +203,7 @@ Columns: `OCCURRED_AT`, `ACTOR` (token name), `METHOD`, `PATH`, `TARGET_DOMAIN`,
   column, and a non-JSON body is dropped rather than stored verbatim.
 
   This stays a deny list rather than an allow list of storable fields, and that
-  is a deliberate trade. The bodies recorded here are appsettings trees and
+  is a deliberate trade. The bodies recorded here are service settings trees and
   translation bundles whose keys are defined by the consuming services, not by
   this schema; an allow list would have nothing to enumerate and would reduce
   every recorded body to its envelope — the part the other columns already
@@ -421,9 +421,9 @@ authentication on the cluster before anything else on this page matters.
 
 Authentication alone is not enough. A single shared credential handed to every
 consumer leaves each of them able to read the whole config estate — one service's
-credential reads another service's appsettings.
+credential reads another service's settings.
 
-That matters because appsettings trees are where connection details and
+That matters because service settings trees are where connection details and
 integration endpoints naturally accumulate. The `env:VAR_NAME` marker convention
 (see the seed data in `internal/database/sqlite.go`) keeps actual secret values
 out of KV, and it is load-bearing precisely because a shared credential gives no
@@ -437,21 +437,21 @@ NATS accounts are the isolation boundary; within an account, user permissions
 narrow subjects. KV bucket `X` is stream `KV_X` with subjects `$KV.X.>`.
 
 1. **Two accounts.** `CONFIG` owns the three KV buckets (`FLAGS`,
-   `MICROCONFIG`, `LOCALIZATION`) and the JetStream domain. Consumers live in a
+   `SERVICESETTINGS`, `LOCALIZATION`) and the JetStream domain. Consumers live in a
    separate account and reach the buckets through explicit exports/imports, so
    the account boundary — not a subject string — is the default deny.
 
 2. **One writer.** central-config gets the only credential in `CONFIG` with
-   publish rights on `$KV.FLAGS.>`, `$KV.MICROCONFIG.>` and
+   publish rights on `$KV.FLAGS.>`, `$KV.SERVICESETTINGS.>` and
    `$KV.LOCALIZATION.>`. Nothing else in the system may publish to them.
 
 3. **Per-service consumer users, scoped by the key layout.** The keys are already
    shaped for this — `{environmentId}.{flagKey}`,
    `{environmentId}.{microserviceId}`, `{environmentId}.{microserviceId}.{locale}` —
    so a user for `cart-api` (id 2) in environment 3 gets subscribe permission on
-   `$KV.MICROCONFIG.3.2`, `$KV.LOCALIZATION.3.2.*` and `$KV.FLAGS.3.>`, and
+   `$KV.SERVICESETTINGS.3.2`, `$KV.LOCALIZATION.3.2.*` and `$KV.FLAGS.3.>`, and
    publish permission on nothing. Flags stay environment-wide because they are
-   not per-service; appsettings and localization become per-service, which is
+   not per-service; service settings and localization become per-service, which is
    what closes the leak.
 
    ```
@@ -461,7 +461,7 @@ narrow subjects. KV bucket `X` is stream `KV_X` with subjects `$KV.X.>`.
                           "$JS.API.CONSUMER.CREATE.>",
                           "$JS.API.DIRECT.GET.>"] }
      subscribe: { allow: ["$KV.FLAGS.3.>",
-                          "$KV.MICROCONFIG.3.2",
+                          "$KV.SERVICESETTINGS.3.2",
                           "$KV.LOCALIZATION.3.2.*",
                           "_INBOX.>"] }
    }
@@ -498,5 +498,5 @@ narrow subjects. KV bucket `X` is stream `KV_X` with subjects `$KV.X.>`.
    for the writer side (`internal/app/config.go`).
 
 Until points 1–3 are in place, treat every KV value as readable by anything on
-the NATS network and keep secrets out of appsettings trees — the `env:VAR_NAME`
+the NATS network and keep secrets out of service settings trees — the `env:VAR_NAME`
 marker convention is mandatory, and stays a good idea afterwards.

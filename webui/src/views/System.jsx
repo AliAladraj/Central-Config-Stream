@@ -138,7 +138,7 @@ function InventoryView() {
 
   const counts = [
     ['flag values', inv.flags?.length ?? 0],
-    ['appsettings rows', inv.microConfigs?.length ?? 0],
+    ['service settings rows', inv.serviceSettings?.length ?? 0],
     ['localization bundles', inv.localization?.length ?? 0],
   ]
 

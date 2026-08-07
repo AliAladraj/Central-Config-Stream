@@ -24,7 +24,7 @@ document per line, which is what a container log shipper expects.
 | `message` | the event, as a short constant string — values live in fields, not in here |
 | `service.name` | `SERVICE_NAME`, default `central-config` |
 | `service.version` | `SERVICE_VERSION`, default `dev` |
-| `event.dataset` | `central-config.<component>` — `http`, `app`, `startup`, `reconciler`, `flagsconfig`, `microconfig`, `localization`, `audit`, `security`, `health`, `inventory` |
+| `event.dataset` | `central-config.<component>` — `http`, `app`, `startup`, `reconciler`, `flagsconfig`, `servicesettings`, `localization`, `audit`, `security`, `health`, `inventory` |
 | `error.message` | present on every failure line |
 | `error.stack_trace` | present on a recovered handler panic |
 | `http.request.id` | correlation id, on every line emitted while serving a request |

@@ -6,9 +6,9 @@ import "fmt"
 // consuming microservices read from: one bucket per config domain, each
 // holding the current value for every key and pushing every change.
 const (
-	BucketFlags        = "FLAGS"
-	BucketMicroConfig  = "MICROCONFIG"
-	BucketLocalization = "LOCALIZATION"
+	BucketFlags           = "FLAGS"
+	BucketServiceSettings = "SERVICESETTINGS"
+	BucketLocalization    = "LOCALIZATION"
 )
 
 // Key builders. Keys are environment-scoped so a consumer for a given
@@ -23,9 +23,9 @@ func FlagKey(environmentID int64, flagKey string) string {
 	return fmt.Sprintf("%d.%s", environmentID, flagKey)
 }
 
-// MicroKey builds the MICROCONFIG bucket key: {environmentID}.{microserviceID}
-// e.g. MicroKey(3, 42) -> "3.42"
-func MicroKey(environmentID, microserviceID int64) string {
+// ServiceSettingsKey builds the SERVICESETTINGS bucket key: {environmentID}.{microserviceID}
+// e.g. ServiceSettingsKey(3, 42) -> "3.42"
+func ServiceSettingsKey(environmentID, microserviceID int64) string {
 	return fmt.Sprintf("%d.%d", environmentID, microserviceID)
 }
 

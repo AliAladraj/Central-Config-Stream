@@ -5,8 +5,8 @@ import (
 	"errors"
 	flagsconfig "github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
 	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 	"log/slog"
 	"net/http"
 	"os"
@@ -147,7 +147,7 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 // which declares how that route's response is narrowed to the same scope. The
 // probe and scrape routes are the only open ones.
 func NewRouter(
-	h *microconfig.Handler,
+	h *servicesettings.Handler,
 	fh *flagsconfig.Handler,
 	lh *localization.Handler,
 	sec *security,
@@ -188,9 +188,9 @@ func NewRouter(
 	mux.HandleFunc("GET /configs/{id}", sec.read(classReadNeutral, http.HandlerFunc(h.GetMicroservice)))
 	mux.HandleFunc("GET /configs/values", sec.read(classReadEnvRows, http.HandlerFunc(h.ListMicroserviceConfigs)))
 	mux.HandleFunc("GET /configs/values/{id}", sec.read(classReadEnvRows, http.HandlerFunc(h.GetMicroserviceConfig)))
-	mux.HandleFunc("POST /configs/values", sec.guard(classEnvBody, "microconfig", h.CreateMicroserviceConfig))
-	mux.HandleFunc("DELETE /configs/values/{id}", sec.guard(classRowMicroConfig, "microconfig", h.DeleteMicroserviceConfig))
-	mux.HandleFunc("PUT /configs/values", sec.guard(classRowMicroConfig, "microconfig", h.UpdateMicroserviceConfig))
+	mux.HandleFunc("POST /configs/values", sec.guard(classEnvBody, "servicesettings", h.CreateMicroserviceConfig))
+	mux.HandleFunc("DELETE /configs/values/{id}", sec.guard(classRowServiceSettings, "servicesettings", h.DeleteMicroserviceConfig))
+	mux.HandleFunc("PUT /configs/values", sec.guard(classRowServiceSettings, "servicesettings", h.UpdateMicroserviceConfig))
 
 	// feature flags. A flag definition carries no environment, but deleting one
 	// removes its values in every environment.

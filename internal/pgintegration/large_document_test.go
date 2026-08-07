@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
-	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/servicesettings"
 )
 
 // documentSize is the size of the settings tree and translation bundle the
@@ -65,12 +65,12 @@ func awkwardDocument(t *testing.T) string {
 // read-back by id, the list, and the reconcile sweep that feeds the publisher.
 func TestLargeSettingsDocumentRoundTripsByteIdentically(t *testing.T) {
 	s := newStack(t)
-	repo := microconfig.NewPostgresRepository(s.DB)
+	repo := servicesettings.NewPostgresRepository(s.DB)
 	ctx := context.Background()
 
 	doc := awkwardDocument(t)
 
-	created, err := repo.CreateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	created, err := repo.CreateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		MicroserviceID: 2, EnvironmentID: 2, SettingsJSON: json.RawMessage(doc),
 	})
 	if err != nil {
@@ -84,8 +84,8 @@ func TestLargeSettingsDocumentRoundTripsByteIdentically(t *testing.T) {
 	}
 	assertSameBytes(t, "read by id", doc, string(read.SettingsJSON))
 
-	listed, err := repo.ListMicroserviceConfigs(ctx, microconfig.AppSettingsFilter{
-		Page: microconfig.Page{Limit: 10}, MicroserviceID: 2, EnvironmentID: 2,
+	listed, err := repo.ListMicroserviceConfigs(ctx, servicesettings.AppSettingsFilter{
+		Page: servicesettings.Page{Limit: 10}, MicroserviceID: 2, EnvironmentID: 2,
 	})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -116,7 +116,7 @@ func TestLargeSettingsDocumentRoundTripsByteIdentically(t *testing.T) {
 	// different statement, with the document in a different placeholder
 	// position.
 	edited := strings.Replace(doc, `"aaa.written.last": true`, `"aaa.written.last": false`, 1)
-	updated, err := repo.UpdateMicroserviceConfig(ctx, microconfig.MicroserviceAppSettings{
+	updated, err := repo.UpdateMicroserviceConfig(ctx, servicesettings.MicroserviceAppSettings{
 		ID: created.ID, MicroserviceID: 2, EnvironmentID: 2, SettingsJSON: json.RawMessage(edited),
 	})
 	if err != nil {

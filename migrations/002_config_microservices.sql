@@ -1,5 +1,5 @@
 -- central-config: microservices reference table (PostgreSQL).
--- One row per consuming service. Its id is what the MICROCONFIG and
+-- One row per consuming service. Its id is what the SERVICESETTINGS and
 -- LOCALIZATION KV keys are built from, so it is part of the public contract
 -- with consumers — rows are added, never renumbered.
 

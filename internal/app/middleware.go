@@ -219,7 +219,7 @@ const (
 	// The classRow* routes address an existing row by id; their environment is
 	// read back from the database rather than taken from the body.
 	classRowFlagValue
-	classRowMicroConfig
+	classRowServiceSettings
 	classRowLocalization
 )
 
@@ -228,7 +228,7 @@ func (c targetClass) table() string {
 	switch c {
 	case classRowFlagValue:
 		return "CONFIG_FLAG_VALUE"
-	case classRowMicroConfig:
+	case classRowServiceSettings:
 		return "CONFIG_MICROSERVICE_APPSETTINGS"
 	case classRowLocalization:
 		return "CONFIG_LOCALIZATION"
@@ -238,11 +238,11 @@ func (c targetClass) table() string {
 }
 
 // movesEnvironment reports whether the class's update statement rewrites
-// ENVIRONMENT_ID from the request body — microconfig and localization do, so
+// ENVIRONMENT_ID from the request body — servicesettings and localization do, so
 // such a write touches both the environment it leaves and the one it enters.
 // The flag-value update sets only VALUE and ENABLED.
 func (c targetClass) movesEnvironment() bool {
-	return c == classRowMicroConfig || c == classRowLocalization
+	return c == classRowServiceSettings || c == classRowLocalization
 }
 
 // writeTarget is what a mutating request actually touches.

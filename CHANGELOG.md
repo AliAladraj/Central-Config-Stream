@@ -15,6 +15,8 @@ that only lists wins is a changelog you have to check the code against anyway.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-08
+
 ### Changed — breaking
 
 One concept was called four things: `MICROCONFIG` in KV, `microconfig` in the Go

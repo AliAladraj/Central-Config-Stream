@@ -35,6 +35,69 @@ export function Loading({ what = 'rows' }) {
   return <div className="state" role="status"><span className="spinner" aria-hidden="true" /> Loading {what}…</div>
 }
 
+// The default page size every table starts at. It was 25 in four places and 50
+// in the audit log, which made "page 1" mean two different amounts of history
+// depending on which view you had opened.
+export const PAGE_SIZE = 25
+
+// PageHeader is the one shape the top of a view takes: what the page is, one
+// line of what it means, and on the right the single action that makes a new
+// row here. Before this the same slot held a description on one view, a create
+// button on two, a refresh on another, a tab bar on two more and nothing at
+// all on the last — so a reader could not learn its meaning once and keep it.
+// Tabs and refresh moved out deliberately: tabs sit below the header because
+// they switch what you are looking at rather than act on it, and refresh sits
+// in the toolbar beside the filters whose results it re-fetches.
+export function PageHeader({ title, subtitle, action }) {
+  return (
+    <div className="view-head">
+      <div className="view-head-text">
+        <h2>{title}</h2>
+        {subtitle && <p className="view-sub">{subtitle}</p>}
+      </div>
+      {action && <div className="view-head-actions">{action}</div>}
+    </div>
+  )
+}
+
+export function Tabs({ tabs, active, onSelect }) {
+  return (
+    <div className="tabs" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          role="tab"
+          aria-selected={active === t.id}
+          className={active === t.id ? 'active' : ''}
+          onClick={() => onSelect(t.id)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ScopeNote states which environment the table below is answering for. The
+// header switcher is a global control, and a view that ignored it said nothing
+// — which reads as "this obeys it". Three views were silently global that way,
+// so the note is required rather than optional: either name the environment in
+// force or say plainly that this table is not scoped by one.
+export function ScopeNote({ envId, envName, global, reason }) {
+  if (global) {
+    return <span className="scope-note t" title={reason}>every environment{reason ? ` — ${reason}` : ''}</span>
+  }
+  return (
+    <span className="scope-note t">
+      {envId ? <>environment <strong>{envName(envId)}</strong> (id {envId}), from the header</> : 'all environments, from the header'}
+    </span>
+  )
+}
+
+export function Refresh({ onClick, children = 'Refresh' }) {
+  return <button className="ghost" onClick={onClick}>{children}</button>
+}
+
 export function Empty({ children }) {
   return <div className="state empty">{children}</div>
 }

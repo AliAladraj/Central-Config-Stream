@@ -1,6 +1,9 @@
 import { Fragment, useState } from 'react'
 import * as api from '../api.js'
-import { Banner, Empty, Loading, Pager, useDebounced, useList } from '../ui.jsx'
+import {
+  Banner, Empty, Loading, PAGE_SIZE, PageHeader, Pager, Refresh, ScopeNote,
+  useDebounced, useList, useResetOnChange,
+} from '../ui.jsx'
 
 // The audit log is the only record that survives the change: a KV bucket holds
 // the current value and nothing else. It gets the full width of the view for
@@ -16,11 +19,11 @@ const statusTone = (code) => {
 }
 
 export default function Audit({ ctx }) {
-  const { refs } = ctx
+  const { refs, envId } = ctx
   const [actor, setActor] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
-  const [limit, setLimit] = useState(50)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
   const [open, setOpen] = useState(null)
 
@@ -28,21 +31,23 @@ export default function Audit({ ctx }) {
   // typed, so they go straight through.
   const actorQuery = useDebounced(actor)
 
+  // The header switcher is a filter like any other here, so switching it starts
+  // at page 1 rather than at whatever offset the previous environment was on.
+  useResetOnChange(envId, () => setOffset(0))
+
   const { rows, loading, error, reload } = useList(
-    () => api.listAudit({ actor: actorQuery, from, to, limit, offset }),
-    [actorQuery, from, to, limit, offset],
+    () => api.listAudit({ actor: actorQuery, from, to, environmentId: envId, limit, offset }),
+    [actorQuery, from, to, envId, limit, offset],
   )
 
   const failures = rows.filter((r) => r.statusCode >= 400).length
 
   return (
     <>
-      <div className="view-head">
-        <h2>Audit log</h2>
-        <span className="t">
-          Every mutating request, recorded after it committed. Reads are not audited.
-        </span>
-      </div>
+      <PageHeader
+        title="Audit log"
+        subtitle="Every mutating request, recorded after it committed. Reads are not audited."
+      />
 
       <div className="panel">
         <div className="toolbar">
@@ -62,21 +67,22 @@ export default function Audit({ ctx }) {
             <span>to</span>
             <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setOffset(0) }} />
           </label>
-          <button className="ghost" onClick={reload}>Refresh</button>
+          <Refresh onClick={reload} />
           {(actor || from || to) && (
             <button className="ghost" onClick={() => { setActor(''); setFrom(''); setTo(''); setOffset(0) }}>Clear filters</button>
           )}
           {rows.length > 0 && (
             <span className="t">{rows.length} entries · {failures} rejected</span>
           )}
+          <ScopeNote envId={envId} envName={refs.envName} />
         </div>
 
         {error ? <Banner problem={{ action: 'Load the audit log', error }} />
           : loading && rows.length === 0 ? <Loading what="audit entries" />
             : rows.length === 0 ? (
               <Empty>
-                {actor || from || to
-                  ? 'No entries match these filters. Widen the date range or clear the actor.'
+                {actor || from || to || envId
+                  ? `No entries match these filters${envId ? ` in ${refs.envName(envId)}` : ''}. Widen the date range, clear the actor, or switch the header environment to all.`
                   : 'No changes have been recorded yet. Make a write and it will appear here.'}
               </Empty>
             ) : (

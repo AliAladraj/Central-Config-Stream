@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../api.js'
-import { Banner, Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, useList, useResetOnChange } from '../ui.jsx'
+import {
+  Banner, Empty, JsonEditor, KvKey, Loading, PAGE_SIZE, PageHeader, Pager,
+  Refresh, ScopeNote, fmtTime, jsonValue, useList, useResetOnChange,
+} from '../ui.jsx'
 
 // Appsettings are the highest-consequence rows in the system: one bad tree
 // breaks every instance of that service at once. So the editor validates as you
@@ -9,7 +12,7 @@ import { Banner, Empty, JsonEditor, KvKey, Loading, Pager, fmtTime, jsonValue, u
 export default function Configs({ ctx }) {
   const { envId, refs, write, confirm, snapshot } = ctx
   const [msId, setMsId] = useState('')
-  const [limit, setLimit] = useState(25)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
   const [selected, setSelected] = useState(null)
   const [creating, setCreating] = useState(false)
@@ -39,10 +42,11 @@ export default function Configs({ ctx }) {
 
   return (
     <>
-      <div className="view-head">
-        <h2>Appsettings</h2>
-        <button className="ghost" onClick={() => { setCreating(true); setSelected(null) }}>New appsettings row</button>
-      </div>
+      <PageHeader
+        title="Appsettings"
+        subtitle="The per-service JSON tree, one row per service per environment. One bad tree breaks every instance of that service at once, so the editor validates as you type and diffs before it sends."
+        action={<button className="ghost" onClick={() => { setCreating(true); setSelected(null) }}>New appsettings row</button>}
+      />
 
       <div className="panel">
         <div className="toolbar">
@@ -53,8 +57,8 @@ export default function Configs({ ctx }) {
               {refs.microservices.map((m) => <option key={m.id} value={m.id}>{m.name} (id {m.id})</option>)}
             </select>
           </label>
-          <span className="t">environment comes from the header switcher</span>
-          <button className="ghost" onClick={reload}>Refresh</button>
+          <Refresh onClick={reload} />
+          <ScopeNote envId={envId} envName={refs.envName} />
         </div>
 
         {error ? <Banner problem={{ action: 'Load appsettings rows', error }} />

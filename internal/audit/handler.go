@@ -2,7 +2,10 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
@@ -29,9 +32,35 @@ func environmentsFrom(r *http.Request) []int64 {
 	return envs
 }
 
+// environmentFilter resolves ?environmentId= against the reader's scope. The
+// parameter narrows and can never widen: a caller asking for an environment
+// its token does not reach gets an empty listing rather than the rows, and
+// rather than a 403 that would confirm the environment exists — the same
+// answer the domain handlers give a single row fetched from outside scope.
+//
+// The three returns are "filter by these", "answer empty" and "bad request".
+func environmentFilter(r *http.Request) (envs []int64, empty bool, err error) {
+	scope := environmentsFrom(r)
+	raw := r.URL.Query().Get("environmentId")
+	if raw == "" {
+		return scope, false, nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 1 {
+		return nil, false, errBadEnvironment
+	}
+	// A nil scope is a full-scope reader, so there is nothing to intersect with.
+	if len(scope) > 0 && !slices.Contains(scope, id) {
+		return nil, true, nil
+	}
+	return []int64{id}, false, nil
+}
+
+var errBadEnvironment = errors.New("invalid environmentId")
+
 // Handler serves the audit log.
 //
-//	GET /audit?actor=&from=&to=&limit=&offset=
+//	GET /audit?actor=&from=&to=&limit=&offset=&environmentId=
 //
 // It follows the list-endpoint conventions of the domain handlers: ParsePage
 // for the page, a flat JSON array, and no internal detail in error bodies. The
@@ -63,11 +92,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	envs, empty, err := environmentFilter(r)
+	if err != nil {
+		web.Error(w, http.StatusBadRequest, "invalid environmentId")
+		return
+	}
+	if empty {
+		web.JSON(w, http.StatusOK, []Entry{})
+		return
+	}
+
 	entries, err := h.store.List(r.Context(), Filter{
 		Actor:        r.URL.Query().Get("actor"),
 		From:         from,
 		To:           to,
-		Environments: environmentsFrom(r),
+		Environments: envs,
 		Limit:        limit,
 		Offset:       offset,
 	})

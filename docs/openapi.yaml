@@ -324,6 +324,24 @@ paths:
           schema:
             type: string
           example: ci-dev
+        - name: environmentId
+          in: query
+          required: false
+          description: |-
+            Narrow the listing to one environment. This only ever narrows: a
+            scoped token asking for an environment outside its scope receives an
+            empty array rather than the rows, and rather than a 403 that would
+            confirm the environment exists — the same answer a single row
+            fetched from outside scope gets.
+
+            Rows that carry no environment — the 401 and 404 envelopes, and
+            writes that belong to no environment — are excluded when this is
+            set, as they are for a scoped token.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+          example: 1
         - name: from
           in: query
           required: false

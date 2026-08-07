@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../api.js'
 import { computeDrift, driftLabel } from '../drift.js'
-import { Banner, Empty, KvKey, Loading, fmtTime } from '../ui.jsx'
+import { Banner, Empty, KvKey, Loading, PageHeader, Refresh, fmtTime } from '../ui.jsx'
 
 // The landing view answers two questions: is the control plane healthy, and is
 // what the fleet is running the same as what the database says it should be.
@@ -73,10 +73,11 @@ export default function Overview({ ctx }) {
 
   return (
     <>
-      <div className="view-head">
-        <h2>Overview</h2>
-        <button className="ghost" onClick={reload}>Re-check</button>
-      </div>
+      <PageHeader
+        title="Overview"
+        subtitle="Whether the control plane is healthy, whether the consumer's cache still matches the database, and what changed recently."
+        action={<Refresh onClick={reload} />}
+      />
 
       <div className="stat-row">
         {Object.entries(health ?? {}).map(([k, v]) => (

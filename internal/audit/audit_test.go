@@ -260,6 +260,76 @@ func TestHandlerAppliesTheRequestScope(t *testing.T) {
 	}
 }
 
+// The console's header switcher scopes every other view, and the audit log
+// used to ignore it while still printing an environment column per row. The
+// parameter that fixed that has to narrow only: the case where it is asked for
+// an environment outside the reader's scope is covered above, and what is left
+// is that it narrows correctly for readers who are entitled to more.
+func TestHandlerNarrowsToTheRequestedEnvironment(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for _, e := range []Entry{
+		{OccurredAt: now, Actor: "release", Method: "PUT", Path: "/flags/values", EnvironmentID: 1, StatusCode: 200},
+		{OccurredAt: now, Actor: "release", Method: "PUT", Path: "/flags/values", EnvironmentID: 3, StatusCode: 200},
+	} {
+		if err := store.Insert(ctx, e); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	h := NewHandler(store)
+
+	list := func(t *testing.T, target string, scope []int64) []Entry {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		if scope != nil {
+			req = WithEnvironments(req, scope)
+		}
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s returned %d, want 200", target, rec.Code)
+		}
+		var got []Entry
+		if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return got
+	}
+
+	// A full-scope reader sees both environments, and one at a time when asked.
+	if got := list(t, "/audit", nil); len(got) != 2 {
+		t.Fatalf("unfiltered returned %d entries, want 2", len(got))
+	}
+	if got := list(t, "/audit?environmentId=1", nil); len(got) != 1 || got[0].EnvironmentID != 1 {
+		t.Fatalf("environmentId=1 returned %+v", got)
+	}
+
+	// A reader scoped to both may still ask for one of them.
+	if got := list(t, "/audit?environmentId=3", []int64{1, 3}); len(got) != 1 || got[0].EnvironmentID != 3 {
+		t.Fatalf("environmentId=3 within scope returned %+v", got)
+	}
+
+	// Out of scope is an empty listing, not a 403 that confirms the row exists.
+	if got := list(t, "/audit?environmentId=3", []int64{1}); len(got) != 0 {
+		t.Fatalf("out-of-scope environmentId returned %+v, want none", got)
+	}
+
+	for _, bad := range []string{"abc", "0", "-1", ""} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/audit?environmentId="+bad, nil))
+		want := http.StatusBadRequest
+		if bad == "" {
+			// An empty parameter is an absent one, not a malformed one.
+			want = http.StatusOK
+		}
+		if rec.Code != want {
+			t.Errorf("environmentId=%q produced %d, want %d", bad, rec.Code, want)
+		}
+	}
+}
+
 func TestHandlerServesFilteredEntries(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

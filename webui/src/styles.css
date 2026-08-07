@@ -90,6 +90,9 @@ h1 .t { font-weight: 400; }
 }
 .pill.live { color: var(--ok); border-color: var(--ok); }
 .pill.down { color: var(--err); border-color: var(--err); }
+/* Not a failure — the console is working exactly as configured. It is a warning
+   that the live panel is about to look broken for a reason that is not a bug. */
+.pill.warn { color: var(--warn); border-color: var(--warn); }
 .nav-toggle { display: none; }
 
 .layout {
@@ -120,8 +123,35 @@ nav { position: sticky; top: 74px; display: grid; gap: 18px; }
 
 main { display: grid; gap: 14px; align-content: start; min-width: 0; }
 
-.view-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+/* Every view opens the same way: the name of the page and one line saying what
+   it is on the left, the one action that creates something here on the right.
+   The subtitle is not decoration — a console page that names itself "System"
+   and then shows a metrics table has told the reader nothing they could not
+   see, and six of the seven views used to do exactly that. */
+.view-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+}
+.view-head-text { display: grid; gap: 3px; min-width: 0; }
 .view-head h2 { font-size: 17px; margin: 0; font-weight: 600; }
+.view-sub { font-size: 12px; color: var(--muted); margin: 0; max-width: 78ch; }
+.view-head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+/* The toolbar states which environment its table is answering for, always. A
+   view that silently ignored the header switcher looked identical to one that
+   obeyed it. Pushed to the end of the toolbar so it reads as a caption on the
+   filters rather than as another control. */
+.scope-note { margin-left: auto; font: 12px var(--mono); }
+.scope-note strong { color: var(--text); font-weight: 600; }
+
+/* The create form, revealed by a "New …" button rather than always on screen.
+   It is set off from the table because it is a different mode — you are
+   writing, not reading — and every view reveals it the same way, which two of
+   them did not before. */
+.new-row {
+  display: grid; gap: 8px; padding: 10px 12px;
+  background: var(--raised); border: 1px dashed var(--line); border-radius: 8px;
+}
 
 .panel {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;

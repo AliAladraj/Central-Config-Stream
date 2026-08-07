@@ -1,15 +1,26 @@
 import { useState } from 'react'
 import * as api from '../api.js'
-import { Banner, Empty, Loading, Pager, fmtTime, useList } from '../ui.jsx'
+import {
+  Banner, Empty, Loading, PAGE_SIZE, PageHeader, Pager, Refresh, ScopeNote,
+  fmtTime, useList,
+} from '../ui.jsx'
 
 // Environments and microservices are the tables every other domain keys off.
 // Neither can be renamed through the API — they are create and delete only —
 // and a delete is refused with 409 while anything still references the row.
+//
+// This is the one view the header environment switcher does not reach, and it
+// cannot: an environment row is what the switcher is choosing between, and a
+// microservice belongs to no environment at all. That is stated in each panel
+// rather than left to be inferred from the switcher having no effect.
 
 export default function Reference({ ctx }) {
   return (
     <>
-      <div className="view-head"><h2>Environments &amp; services</h2></div>
+      <PageHeader
+        title="Environments & services"
+        subtitle="The two tables every flag, appsettings row and bundle keys off. Create and delete only — neither can be renamed through the API."
+      />
       <div className="two-up">
         <Environments ctx={ctx} />
         <Microservices ctx={ctx} />
@@ -18,10 +29,37 @@ export default function Reference({ ctx }) {
   )
 }
 
+// NewRow is the create form every table in this console reveals from its own
+// "New …" button. Keeping it in one place is what stops the three views that
+// each invented their own from drifting apart again.
+function NewRow({ open, onClose, label, placeholder, value, onValue, onCreate, note }) {
+  if (!open) return null
+  return (
+    <div className="new-row">
+      <div className="toolbar">
+        <label className="field">
+          <span>{label}</span>
+          <input
+            autoFocus
+            value={value}
+            onChange={(e) => onValue(e.target.value)}
+            placeholder={placeholder}
+            onKeyDown={(e) => { if (e.key === 'Enter' && value) onCreate() }}
+          />
+        </label>
+        <button disabled={!value} onClick={onCreate}>Create</button>
+        <button className="ghost" onClick={onClose}>Cancel</button>
+      </div>
+      <p className="hint">{note}</p>
+    </div>
+  )
+}
+
 function Environments({ ctx }) {
   const { refs, write, confirm } = ctx
   const [name, setName] = useState('')
-  const [limit, setLimit] = useState(25)
+  const [creating, setCreating] = useState(false)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
   const { rows, loading, error, reload } = useList(
     () => api.listEnvironments({ limit, offset }), [limit, offset],
@@ -29,7 +67,7 @@ function Environments({ ctx }) {
 
   const create = async () => {
     const r = await write('POST /environments', () => api.createEnvironment({ name }))
-    if (r.ok) { setName(''); reload(); refs.reload() }
+    if (r.ok) { setName(''); setCreating(false); reload(); refs.reload() }
   }
 
   const remove = async (row) => {
@@ -50,15 +88,24 @@ function Environments({ ctx }) {
 
   return (
     <div className="panel">
-      <h3 className="panel-title">Environments</h3>
+      <h3 className="panel-title">
+        Environments
+        <button className="ghost mini" onClick={() => setCreating((c) => !c)}>New environment</button>
+      </h3>
       <div className="toolbar">
-        <label className="field">
-          <span>name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="canary" />
-        </label>
-        <button disabled={!name} onClick={create}>Create environment</button>
+        <Refresh onClick={reload} />
+        <ScopeNote global reason="an environment row is what the header switcher chooses between" />
       </div>
-      <p className="hint">A new environment changes the set every token scope is expressed in, so this needs a full-scope token.</p>
+      <NewRow
+        open={creating}
+        onClose={() => { setCreating(false); setName('') }}
+        label="name"
+        placeholder="canary"
+        value={name}
+        onValue={setName}
+        onCreate={create}
+        note="A new environment changes the set every token scope is expressed in, so this needs a full-scope token."
+      />
 
       {error ? <Banner problem={{ action: 'Load environments', error }} />
         : loading && rows.length === 0 ? <Loading what="environments" />
@@ -86,7 +133,8 @@ function Environments({ ctx }) {
 function Microservices({ ctx }) {
   const { refs, write, confirm } = ctx
   const [name, setName] = useState('')
-  const [limit, setLimit] = useState(25)
+  const [creating, setCreating] = useState(false)
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [offset, setOffset] = useState(0)
   const { rows, loading, error, reload } = useList(
     () => api.listMicroservices({ limit, offset }), [limit, offset],
@@ -94,7 +142,7 @@ function Microservices({ ctx }) {
 
   const create = async () => {
     const r = await write('POST /microservices', () => api.createMicroservice({ name }))
-    if (r.ok) { setName(''); reload(); refs.reload() }
+    if (r.ok) { setName(''); setCreating(false); reload(); refs.reload() }
   }
 
   const remove = async (row) => {
@@ -115,15 +163,24 @@ function Microservices({ ctx }) {
 
   return (
     <div className="panel">
-      <h3 className="panel-title">Microservices</h3>
+      <h3 className="panel-title">
+        Microservices
+        <button className="ghost mini" onClick={() => setCreating((c) => !c)}>New microservice</button>
+      </h3>
       <div className="toolbar">
-        <label className="field">
-          <span>name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="catalog-api" />
-        </label>
-        <button disabled={!name} onClick={create}>Create microservice</button>
+        <Refresh onClick={reload} />
+        <ScopeNote global reason="a microservice belongs to no environment" />
       </div>
-      <p className="hint">A microservice belongs to no environment; its appsettings and bundles are per environment.</p>
+      <NewRow
+        open={creating}
+        onClose={() => { setCreating(false); setName('') }}
+        label="name"
+        placeholder="catalog-api"
+        value={name}
+        onValue={setName}
+        onCreate={create}
+        note="A microservice belongs to no environment; its appsettings and bundles are per environment."
+      />
 
       {error ? <Banner problem={{ action: 'Load microservices', error }} />
         : loading && rows.length === 0 ? <Loading what="microservices" />

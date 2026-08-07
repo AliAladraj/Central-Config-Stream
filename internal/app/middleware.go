@@ -119,7 +119,40 @@ func parseAdminTokens(named, shared string) (*tokenSet, error) {
 		set.tokens = append(set.tokens, adminToken{name: name, secret: []byte(secret), envs: envs})
 	}
 
+	// A variable that holds separators but yields no token at all is a rendering
+	// accident, not a configuration: an empty secret file, or a Helm value that
+	// collapsed to " , , ". Returning the empty set for it is indistinguishable
+	// from the genuinely-unset case, which disables authentication — so the
+	// process came up announcing that neither variable was set, handed every
+	// request a zero adminToken (nil envs, full scope) and served unauthenticated
+	// deletes against production. docs/SECURITY.md says a malformed ADMIN_TOKENS
+	// is a fatal startup error; this is what makes that true.
+	//
+	// The line is drawn after trimming, and it has to be: a value that is
+	// entirely blank cannot be told apart from an unset one — ADMIN_TOKENS= in
+	// an env file renders to exactly that — and the unset case is the documented
+	// development path, which announces itself loudly rather than quietly. A
+	// value with a separator in it is not blank: something was rendered into it,
+	// and that says credentials were meant to be configured.
+	if strings.TrimSpace(named) != "" && len(set.tokens) == 0 {
+		return nil, errors.New("ADMIN_TOKENS is set but contains no entry — " +
+			"want name:scope:secret entries separated by commas, or leave the variable unset")
+	}
+
 	if shared != "" {
+		// The single-credential form is stricter about the blank value than the
+		// list above, because the outcome is worse rather than merely equal to
+		// unset: a whitespace ADMIN_TOKEN is a live full-scope credential whose
+		// secret is a space, with authentication enabled and no warning printed,
+		// and anyone who sends "Bearer  " holds it.
+		//
+		// The value is deliberately not trimmed before it becomes the secret. A
+		// secret is bytes, and quietly accepting " hunter2 " as "hunter2" would
+		// authenticate something the operator did not configure.
+		if strings.TrimSpace(shared) == "" {
+			return nil, errors.New("ADMIN_TOKEN is set to whitespace — " +
+				"that is a credential nobody chose; set a secret or leave the variable unset")
+		}
 		set.tokens = append(set.tokens, adminToken{name: sharedTokenName, secret: []byte(shared)})
 	}
 	return set, nil
@@ -291,6 +324,20 @@ func (s *security) authenticate(w http.ResponseWriter, r *http.Request) (adminTo
 // the bucket is empty.
 func (s *security) spend(w http.ResponseWriter, key string) bool {
 	retry, ok := s.limiter.allow(key)
+	return charged(w, retry, ok)
+}
+
+// spendAnonymous charges a write from a caller that has presented no usable
+// credential. It draws on a separate, deliberately smaller share of the same
+// limiter — see allowAnonymous.
+func (s *security) spendAnonymous(w http.ResponseWriter, key string) bool {
+	retry, ok := s.limiter.allowAnonymous(key)
+	return charged(w, retry, ok)
+}
+
+// charged turns a limiter verdict into the response. Retry-After is whole
+// seconds, which is what the header takes.
+func charged(w http.ResponseWriter, retry int, ok bool) bool {
 	if ok {
 		return true
 	}
@@ -300,18 +347,52 @@ func (s *security) spend(w http.ResponseWriter, key string) bool {
 }
 
 // limitWrites is the outermost gate on a mutating request, and it keys on the
-// client address because at this point nothing about the caller has been
-// checked. It runs ahead of the audit middleware: without it an unauthenticated
-// request to any path — including one matching no route — buys a megabyte of
-// body read, a full JSON walk and a synchronous insert into the audit table,
-// which is a write primitive with no credential in front of it.
+// client address because no proxy header can be trusted to name the caller. It
+// runs ahead of the audit middleware: without it an unauthenticated request to
+// any path — including one matching no route — buys a megabyte of body read, a
+// full JSON walk and a synchronous insert into the audit table, which is a
+// write primitive with no credential in front of it.
+//
+// A caller that has presented no usable credential draws on a bucket of its
+// own. Sharing one address-keyed bucket meant a flood of credential-less writes
+// spent the budget that the next authenticated write from the same address
+// needed — and behind an ingress RemoteAddr is the proxy, so one anonymous
+// attacker could 429 every operator arriving through it. The secret is matched
+// here to decide which bucket to charge, which is a constant-time compare
+// against a handful of configured tokens and none of the work this gate exists
+// to keep away from unauthenticated callers; the request is still authenticated
+// properly further in, and an attacker who does hold a token is bounded by the
+// per-credential budget the guard charges.
 func (s *security) limitWrites(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isMutating(r.Method) && !s.spend(w, addressKey(r)) {
-			return
+		if isMutating(r.Method) {
+			if s.presentsCredential(r) {
+				if !s.spend(w, addressKey(r)) {
+					return
+				}
+			} else if !s.spendAnonymous(w, anonymousKey(r)) {
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// presentsCredential reports whether the request arrives with a bearer secret
+// this deployment actually configured. It is not authentication — it answers no
+// for the cases authenticate would 401 — and it says yes to everything when
+// auth is disabled, because there is then no credential to present and the
+// caller is the local developer the mode exists for.
+func (s *security) presentsCredential(r *http.Request) bool {
+	if !s.tokens.enabled() {
+		return true
+	}
+	secret, prefixed := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !prefixed {
+		return false
+	}
+	_, ok := s.tokens.lookup(secret)
+	return ok
 }
 
 // readClass says how a read route's response relates to the caller's
@@ -363,6 +444,20 @@ func (s *security) read(class readClass, next http.Handler) http.HandlerFunc {
 		if !ok {
 			return
 		}
+
+		// Reads are otherwise unmetered because they answer from a page bounded
+		// in SQL. /inventory does not: it reads all three domains whole and
+		// pages in Go, so any valid token — including the narrowest — can loop
+		// it and force three full scans plus every document in the estate into
+		// memory, per request. Until the listers can take a limit and an offset
+		// (see inventory.go), a budget of its own is the bound: it caps the rate
+		// rather than the cost of one call, and it is charged per credential so
+		// one tool looping it cannot spend an operator's write budget or
+		// another caller's reads.
+		if class == classReadInventory && !s.spend(w, inventoryKey(token.name, r)) {
+			return
+		}
+
 		if token.envs == nil {
 			next.ServeHTTP(w, r) // full scope
 			return
@@ -476,10 +571,24 @@ func (w *scopeWriter) flush() {
 // body that does not decode is not something a handler here produces, and it is
 // not forwarded on the chance that it holds rows this caller may not see.
 func scopeFilter(body []byte, envs map[int64]bool, field string) (int, []byte) {
-	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	trimmed := bytes.TrimSpace(body)
 	switch {
 	case len(trimmed) == 0:
 		return http.StatusOK, body
+
+	// An empty listing arrives as null, not as []: the repositories build their
+	// result into a nil slice and Go marshals that. A filter that matched
+	// nothing and an ?offset past the end of the table both produce it, so this
+	// is an ordinary empty page and not a malformed body — without this arm it
+	// fell to the default and a scoped caller got 500 for the very response
+	// docs/SECURITY.md tells it to page until it sees. It answers [] rather than
+	// null because that is already what the arm below produces when the scope
+	// keeps none of a page's rows: a narrowed caller then has one shape for "no
+	// rows", whichever end of the pipe the emptiness came from. A single row
+	// fetched by id never reaches here as null — those handlers answer their own
+	// 404 through the error path.
+	case bytes.Equal(trimmed, []byte("null")):
+		return http.StatusOK, []byte("[]\n")
 
 	case trimmed[0] == '[':
 		var rows []json.RawMessage
@@ -597,8 +706,15 @@ func (s *security) lookupRowEnvironment(ctx context.Context, table string, id in
 	if s.db == nil || table == "" {
 		return 0, false
 	}
-	// table is one of the constants above, never caller input.
-	bind := ":1"
+	// table is one of the constants above, never caller input. The placeholder
+	// is not: PostgreSQL is the production driver and wants $1, and the Oracle
+	// :1 that used to stand here made every one of these lookups fail with
+	// SQLSTATE 42601. A failed lookup reports false, which the caller turns into
+	// target.global — so the effect was not an error a caller could see but a
+	// blanket 403 for every scoped token on every row-addressed write, an
+	// unloggable-looking permissions bug. Only the SQLite branch was ever
+	// exercised, because every test in this package runs on that driver.
+	bind := "$1"
 	if s.sqlite {
 		bind = "?"
 	}

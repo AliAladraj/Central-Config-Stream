@@ -20,6 +20,15 @@ import (
 // ?offset, so a caller walks all three together; the reconcile queries return
 // every row and the page is taken here, which is why the limit matters — the
 // response is the whole configuration estate otherwise.
+//
+// Taking the page here also means ?limit bounds only the response, never the
+// read: ListAllForReconcile has no LIMIT and no WHERE, so every request scans
+// all three tables and materialises every document whatever page it was asked
+// for. The read guard meters this route per credential for that reason
+// (middleware.go), which bounds how often that happens but not what one call
+// costs. Closing it properly needs the listers to take a limit, an offset and
+// the caller's scope so the database does the paging — that is a change to the
+// three repository packages, not to this handler.
 type Inventory struct {
 	Flags        []InventoryFlag  `json:"flags"`
 	MicroConfigs []InventoryMicro `json:"microConfigs"`

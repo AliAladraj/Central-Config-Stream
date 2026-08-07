@@ -250,6 +250,41 @@ func TestInventoryPages(t *testing.T) {
 	}
 }
 
+// The repositories build an empty listing into a nil slice, which marshals to
+// null rather than []. The scope filter had no arm for that shape, so it fell to
+// the default — "a body that does not decode" — and answered 500. Every listing
+// ends in an empty page, and docs/SECURITY.md tells a scoped caller to page
+// until it sees one, so this was a 500 on the ordinary end of every walk.
+func TestScopedTokenGetsAnEmptyPageNotAnError(t *testing.T) {
+	api, _ := newTestAPI(t, "ci-dev:1|2:devsecret,release:*:prodsecret", "")
+
+	for _, path := range []string{
+		"/flags/values?offset=999",
+		"/configs/values?offset=999",
+		"/localization?offset=999",
+		"/environments?offset=999",
+		// The same empty answer arriving from a filter rather than from paging
+		// past the end: nothing is seeded in environment 2.
+		"/flags/values?environmentId=2",
+	} {
+		status, body := apiGet(t, api, path, "devsecret")
+		if status != http.StatusOK {
+			t.Errorf("GET %s as a scoped token = %d (%s), want 200", path, status, strings.TrimSpace(body))
+			continue
+		}
+		if strings.TrimSpace(body) != "[]" {
+			t.Errorf("GET %s answered %q, want []", path, strings.TrimSpace(body))
+		}
+	}
+
+	// A full-scope token is not narrowed at all, so its empty page is still the
+	// null the repository produced — the split docs/openapi.yaml describes.
+	status, body := apiGet(t, api, "/flags/values?offset=999", "prodsecret")
+	if status != http.StatusOK || strings.TrimSpace(body) != "null" {
+		t.Errorf("GET an empty page as full scope = %d %q, want 200 null", status, strings.TrimSpace(body))
+	}
+}
+
 // The audit trail carries the request bodies of every environment, so a
 // dev-scoped credential reading it used to be a way around the write scope it
 // is subject to.

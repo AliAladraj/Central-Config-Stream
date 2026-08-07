@@ -156,6 +156,30 @@ func NewApp(cfg *Config) (*App, error) {
 	return app, nil
 }
 
+// Handler is the middleware chain and router exactly as the server serves
+// them. It exists for internal/pgintegration: this package's own end-to-end
+// tests all run on SQLite, and the behaviour that differs between the two — the
+// scope lookup's bind syntax, the audit columns' declared widths — is therefore
+// reachable only from a test outside this package, which cannot build the
+// unexported security type NewRouter takes. Nothing in the binary calls it.
+func (a *App) Handler() http.Handler { return a.server.Handler }
+
+// Close releases what NewApp opened, for a caller that never reached Run — a
+// test, or a startup that failed after the app was built. Run does its own
+// ordered shutdown instead, because there the listener has to stop and the
+// reconciler has to be told before the database can go.
+func (a *App) Close() error {
+	if a.stopReconcile != nil {
+		a.stopReconcile()
+	}
+	if a.nats != nil {
+		if err := a.nats.Drain(); err != nil {
+			appLog.Error("nats drain failed", obs.Err(err))
+		}
+	}
+	return a.db.Close()
+}
+
 // openDB dials the configured backend. PostgreSQL is the production source of
 // truth; sqlite exists only for the local test stack (deploy/compose).
 func openDB(cfg *Config) (*sql.DB, error) {

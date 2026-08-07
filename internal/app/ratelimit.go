@@ -68,9 +68,38 @@ func newRateLimiter(perMinute int) *rateLimiter {
 	}
 }
 
+// anonWriteCost is what one credential-less write costs against its bucket. It
+// is a divisor rather than a second limiter on purpose: the anonymous share
+// then lives in the same map, under the same sweep and the same maxBuckets
+// ceiling, so bounding what an unauthenticated flood can allocate did not have
+// to be solved twice. Four means a credential-less caller gets a quarter of
+// WRITE_RATE_LIMIT_PER_MINUTE, on top of rather than out of what an
+// authenticated one at the same address may spend — so the worst an address can
+// now extract from the edge is a quarter more work than before, in exchange for
+// no amount of it being able to lock out a caller that holds a token. A quarter
+// is far more than the zero legitimate writes a caller with no credential
+// makes, and far less than enough to matter to the database.
+const anonWriteCost = 4
+
 // allow spends one token for key. When the bucket is empty it reports the whole
 // seconds a caller should wait, for the Retry-After header.
 func (l *rateLimiter) allow(key string) (retryAfter int, ok bool) {
+	return l.allowCost(key, 1)
+}
+
+// allowAnonymous spends a write from a caller that presented no usable
+// credential. The cost is capped at the whole budget so that a deployment
+// configured down to a handful of writes a minute still admits one — a bucket
+// nothing can ever afford is a 429 for every unauthenticated request, which is
+// a different failure from the one this is defending against.
+func (l *rateLimiter) allowAnonymous(key string) (retryAfter int, ok bool) {
+	if l == nil {
+		return 0, true
+	}
+	return l.allowCost(key, math.Min(anonWriteCost, l.capacity))
+}
+
+func (l *rateLimiter) allowCost(key string, cost float64) (retryAfter int, ok bool) {
 	if l == nil {
 		return 0, true
 	}
@@ -98,11 +127,11 @@ func (l *rateLimiter) allow(key string) (retryAfter int, ok bool) {
 	b.tokens = math.Min(l.capacity, b.tokens+now.Sub(b.last).Seconds()*l.refill)
 	b.last = now
 
-	if b.tokens < 1 {
-		wait := (1 - b.tokens) / l.refill
+	if b.tokens < cost {
+		wait := (cost - b.tokens) / l.refill
 		return int(math.Ceil(wait)), false
 	}
-	b.tokens--
+	b.tokens -= cost
 	return 0, true
 }
 
@@ -129,11 +158,24 @@ func (l *rateLimiter) sweep(now time.Time) {
 // the fleet's shared edge budget there rather than one operator's; the
 // per-credential budget the guard charges is what separates operators.
 func addressKey(r *http.Request) string {
+	return "ip:" + peerHost(r)
+}
+
+func peerHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		host = r.RemoteAddr
+		return r.RemoteAddr
 	}
-	return "ip:" + host
+	return host
+}
+
+// anonymousKey identifies an address that has presented no usable credential.
+// It is a separate namespace from addressKey rather than the same one, so that
+// a flood of credential-less writes cannot spend the budget an authenticated
+// caller at the same address is about to need — which behind an ingress, where
+// RemoteAddr is the proxy for every operator at once, is the whole point.
+func anonymousKey(r *http.Request) string {
+	return "anon:" + peerHost(r)
 }
 
 // tokenKey identifies a caller whose credential has already been matched, so
@@ -141,4 +183,17 @@ func addressKey(r *http.Request) string {
 // label rather than the secret, so nothing sensitive lands in a long-lived map.
 func tokenKey(name string) string {
 	return "t:" + name
+}
+
+// inventoryKey meters the one read that is not bounded by a page. It is its own
+// namespace so that polling /inventory does not eat the credential's write
+// budget — an operator locked out of a flag flip by a dashboard refreshing in
+// the background would be a worse failure than the one this bounds. The address
+// is the fallback for a deployment running with auth disabled, where every
+// caller is nameless.
+func inventoryKey(name string, r *http.Request) string {
+	if name == "" {
+		return "inv:" + peerHost(r)
+	}
+	return "inv:t:" + name
 }

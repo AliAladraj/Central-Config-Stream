@@ -93,6 +93,37 @@ func TestAuditRecordsRejectedWrites(t *testing.T) {
 	}
 }
 
+// TARGET_ID is VARCHAR(64) and its value is the {id} the caller put in the
+// path, so a padded one made the INSERT fail and the request left no trace at
+// all — an attacker probing with the wrong credential could stay out of the
+// trail by lengthening the id it aimed at. It is truncated like PATH and
+// REMOTE_ADDR now. Only Postgres enforces the width, so this asserts the value
+// handed to the store rather than what a column does with it; the end-to-end
+// case is in internal/pgintegration.
+func TestAuditTruncatesAnOverlongTargetID(t *testing.T) {
+	rec := &fakeRecorder{}
+	sec := &security{tokens: mustTokens(t, "ci-dev:1|2:devsecret", "")}
+	handler := auditWrites(rec, routedEverywhere, sec.guard(classRowFlagValue, "flagvalues", okHandler))
+
+	padded := strings.Repeat("9", 200)
+	req := httptest.NewRequest(http.MethodDelete, "/flags/values/"+padded, nil)
+	req.SetPathValue("id", padded)
+	req.Header.Set("Authorization", "Bearer devsecret")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	entries := rec.all()
+	if len(entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(entries))
+	}
+	if got := entries[0].TargetID; len(got) != maxAuditTargetID {
+		t.Errorf("TARGET_ID recorded as %d characters, want %d", len(got), maxAuditTargetID)
+	}
+	// The path carries the same padding and has its own, wider bound.
+	if got := entries[0].Path; len(got) > maxAuditPath {
+		t.Errorf("PATH recorded as %d characters, over the %d the column takes", len(got), maxAuditPath)
+	}
+}
+
 // A write addressed at no route changes nothing, so recording it buys nothing
 // and costs a megabyte of body read, a full JSON walk and a synchronous insert
 // — an unauthenticated way to flood the audit table and drown the real trail.

@@ -14,6 +14,14 @@ import (
 const (
 	// maxAuditPath matches the CONFIG_AUDIT_LOG.PATH column.
 	maxAuditPath = 400
+	// maxAuditTargetID matches the CONFIG_AUDIT_LOG.TARGET_ID column. The id
+	// comes from {id} in the request path and is unbounded caller input, so
+	// without this a padded one made the INSERT fail on VARCHAR(64) and the
+	// request left no row at all — an attacker probing with the wrong
+	// credential could stay out of the trail entirely by lengthening the id it
+	// aimed at. SQLite ignores declared widths, so only a Postgres deployment
+	// ever saw it.
+	maxAuditTargetID = 64
 	// auditWriteTimeout bounds the record insert. It runs after the response
 	// handler, so a wedged database must not hold the connection open.
 	auditWriteTimeout = 5 * time.Second
@@ -89,7 +97,7 @@ func auditWrites(rec auditRecorder, routed func(*http.Request) bool, next http.H
 			Method:        r.Method,
 			Path:          truncate(r.URL.Path, maxAuditPath),
 			Domain:        sink.domain,
-			TargetID:      sink.rowID,
+			TargetID:      truncate(sink.rowID, maxAuditTargetID),
 			EnvironmentID: sink.envID,
 			StatusCode:    recorder.status,
 			RemoteAddr:    remoteHost(r),

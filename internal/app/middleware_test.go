@@ -248,6 +248,71 @@ func TestParseAdminTokensRejectsSecretsSplitOnAComma(t *testing.T) {
 	}
 }
 
+// A variable that is set but holds no usable entry used to parse into an empty
+// token set, which enabled() reads as "auth is off" — so ' , , ', which is what
+// a Helm value referencing an empty secret renders to, disabled authentication
+// on the whole API while the startup log said neither variable was set. An
+// unauthenticated DELETE then answered 204 and took a production row with it.
+func TestParseAdminTokensRejectsAConfigurationThatYieldsNoToken(t *testing.T) {
+	for _, named := range []string{",", " , , ", ",,,", " ,"} {
+		set, err := parseAdminTokens(named, "")
+		if err == nil {
+			t.Errorf("parseAdminTokens(%q) returned a token set with %d tokens and no error — "+
+				"that set disables authentication", named, len(set.tokens))
+		}
+	}
+
+	// The single-credential form is refused even when it is merely blank: unlike
+	// the list, it does not collapse to the disabled case but to an enabled one
+	// whose secret is a space, with no warning printed.
+	if _, err := parseAdminTokens("", "   "); err == nil {
+		t.Error("a whitespace-only ADMIN_TOKEN was accepted as a credential")
+	}
+
+	// Neither variable set is the documented development path and still parses:
+	// it is disabled deliberately, and warnIfAuthDisabled says so loudly. A
+	// blank ADMIN_TOKENS is the same case — `ADMIN_TOKENS=` in an env file is
+	// not distinguishable from the variable being absent.
+	for _, named := range []string{"", " ", "\t\n"} {
+		set, err := parseAdminTokens(named, "")
+		if err != nil {
+			t.Fatalf("parseAdminTokens(%q) is the documented dev path and must still parse: %v", named, err)
+		}
+		if set.enabled() {
+			t.Errorf("parseAdminTokens(%q) reported authentication as enabled", named)
+		}
+	}
+
+	// A secret may still be surrounded by whatever bytes the operator chose;
+	// only an entirely blank value is refused, because trimming a real secret
+	// would authenticate something different from what was configured.
+	if _, err := parseAdminTokens("", " padded "); err != nil {
+		t.Errorf("a secret with surrounding spaces was rejected: %v", err)
+	}
+}
+
+// docs/SECURITY.md promises credentials are parsed before the database is
+// opened and before the listener binds, so a malformed value stops the process.
+func TestNewAppRefusesAMalformedTokenConfiguration(t *testing.T) {
+	for _, tc := range []struct{ name, named, shared string }{
+		{"ADMIN_TOKENS renders to separators only", " , , ", ""},
+		{"ADMIN_TOKEN renders to whitespace", "", " "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// No connection string: reaching the database at all would mean the
+			// credentials were not checked first.
+			app, err := NewApp(&Config{DBDriver: "sqlite", AdminTokens: tc.named, AdminToken: tc.shared})
+			if err == nil {
+				_ = app.Close()
+				t.Fatal("NewApp started with a credential configuration that authenticates nobody")
+			}
+			if !strings.Contains(err.Error(), "admin token") {
+				t.Errorf("the startup error does not name the configuration: %v", err)
+			}
+		})
+	}
+}
+
 // nosniff goes on every response the API writes, and HSTS only when the
 // connection is really TLS.
 func TestSecurityHeadersMiddleware(t *testing.T) {

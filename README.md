@@ -140,7 +140,7 @@ Use it for a quick look, not for telling two deployments apart — `make build`
 stamps the real values.
 
 Once the first tag exists, [`.github/workflows/release.yml`](.github/workflows/release.yml)
-publishes a distroless, non-root linux/amd64 image to
+publishes a distroless, non-root image for linux/amd64 and linux/arm64 to
 `ghcr.io/erasedkyte/central-config` and cross-compiled `.tar.gz` binaries with a
 `checksums.txt` to the releases page, both stamped with a real version, because
 the pipeline passes the `-ldflags` a laptop build does not.

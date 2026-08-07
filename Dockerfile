@@ -1,5 +1,10 @@
 # ---- build stage ----
-FROM golang:1.26-alpine AS build
+# Pinned to the machine running the build, not the image being produced. Go
+# cross-compiles cleanly with CGO off, so a multi-architecture image is built by
+# telling the compiler which target to emit rather than by emulating that
+# architecture — the alternative, running an arm64 toolchain under QEMU, turns a
+# ten-second compile into minutes for no benefit.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
 
 # cache deps
@@ -33,15 +38,22 @@ ENV LDFLAGS="-s -w \
 # stops.
 
 FROM build AS build-service
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="$LDFLAGS" -o /out/central-config ./cmd/central-config
+# TARGETOS/TARGETARCH are supplied by BuildKit per platform in the list; they are
+# empty on a plain `docker build`, where Go then falls back to the host's own
+# values and produces exactly what it always did.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags="$LDFLAGS" -o /out/central-config ./cmd/central-config
 # writable data dir for the SQLite test backend, owned by the runtime user
 RUN mkdir -p /out/data && chown 65532:65532 /out/data
 
 FROM build AS build-console
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="$LDFLAGS" -o /out/testconsole ./cmd/testconsole
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags="$LDFLAGS" -o /out/testconsole ./cmd/testconsole
 
 # ---- React UI for the test console ----
-FROM node:20-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:20-alpine AS ui
 WORKDIR /ui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci

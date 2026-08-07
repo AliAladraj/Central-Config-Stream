@@ -15,6 +15,15 @@ that only lists wins is a changelog you have to check the code against anyway.
 
 ## [Unreleased]
 
+### Fixed
+
+- The published container image is now built for `linux/arm64` as well as
+  `linux/amd64` and pushed as one manifest list, so `docker pull` resolves the
+  right image on an ARM host instead of failing outright. The build
+  cross-compiles rather than emulating: the build stage is pinned to the
+  machine running it and Go is told its target, so the second architecture
+  costs a compile rather than minutes under QEMU.
+
 ## [0.1.0] — 2026-08-07
 
 The first tagged release. Everything in the repository at the tag is listed

@@ -32,6 +32,9 @@ services:
     environment:
       DB_DRIVER: sqlite
       CONN_STRING: "file:/data/central-config.db?_pragma=busy_timeout(5000)"
+      # The service passes PORT straight to http.Server.Addr, so the bare-colon
+      # form binds every interface — which is what a published port needs, and
+      # why this line does not have to change the way the console's did.
       PORT: ":8080"
       NATS_URL: "nats://nats:4222"
       PUBLISH_ENABLED: "true"
@@ -60,9 +63,21 @@ services:
       ENVIRONMENT_ID: "1"
       CENTRAL_CONFIG_URL: "http://central-config:8080"
       ADMIN_TOKEN: "local-dev-token"
-      PORT: ":8090"
+      # The console binds loopback unless PORT names a host, because it proxies
+      # an admin token and must not widen itself by accident. A container is the
+      # one case where widening is right: loopback here is the container's own,
+      # not the host's, so a console bound to it answers nothing that arrives
+      # through the published port below. The network namespace is the boundary
+      # that the loopback default is standing in for everywhere else.
+      PORT: "0.0.0.0:8090"
       WEB_DIR: "/app/web"
     ports:
+      # Reach it as localhost:8090. A wildcard bind names no host, so the Host
+      # allowlist is loopback only: /api/state, /api/events and the admin proxy
+      # answer 403 to a request arriving under this machine's LAN name or
+      # address, though the static bundle at / is served to anyone — it is the
+      # compiled UI and holds nothing. Set ALLOWED_HOSTS on this service to
+      # browse the stack from another machine.
       - "8090:8090"
     depends_on:
       - central-config

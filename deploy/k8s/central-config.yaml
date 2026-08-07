@@ -27,8 +27,20 @@ spec:
           type: RuntimeDefault
       containers:
         - name: central-config
-          image: your-registry/central-config:latest
-          imagePullPolicy: IfNotPresent
+          # What .github/workflows/release.yml publishes. It was a
+          # your-registry/… placeholder, which is a manifest that cannot be
+          # applied as written and gives no hint that the images already exist.
+          #
+          # Pin a version tag for a real deployment — `:v1.4.0`, matching a
+          # release — and move SERVICE_VERSION below to the same string, so the
+          # logs and metrics say which build is running. With a tag that names a
+          # build, imagePullPolicy: IfNotPresent is right and saves the pull.
+          # `latest` is a moving tag, and IfNotPresent against a moving tag is
+          # the pair that quietly does nothing: a node that already holds some
+          # older `latest` never fetches the new one, so a rollout leaves the
+          # cluster running two versions and reports success.
+          image: ghcr.io/erasedkyte/central-config:latest
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
@@ -45,6 +57,26 @@ spec:
               value: "3"
             - name: RECONCILE_INTERVAL
               value: "5m"
+            # The connection-pool bounds, written out at the values the process
+            # would have defaulted to. They are here rather than left implicit
+            # because they are per replica: with `replicas: 2` above this
+            # Deployment may hold 40 PostgreSQL connections, and every one of
+            # them is a backend process on a server that is usually not this
+            # service's alone. That is a number an operator has to be able to
+            # read off the manifest and multiply, not one to go looking for in
+            # internal/database/db.go. Raise them together with `replicas`, and
+            # check the total against the server's max_connections.
+            - name: DB_MAX_OPEN_CONNS
+              value: "20"
+            - name: DB_MAX_IDLE_CONNS
+              value: "5"
+            # A lifetime is what retires a connection that survived a failover
+            # or a pgbouncer restart as a half-dead socket — the kind that only
+            # fails when something next tries to use it.
+            - name: DB_CONN_MAX_LIFETIME
+              value: "30m"
+            - name: DB_CONN_MAX_IDLE_TIME
+              value: "5m"
             # ECS JSON on stdout, for Filebeat / Elastic Agent to pick up.
             - name: LOG_FORMAT
               value: "json"
@@ -57,15 +89,48 @@ spec:
                 secretKeyRef:
                   name: central-config-secrets
                   key: CONN_STRING
-            - name: ADMIN_TOKEN
+            # ADMIN_TOKENS, not ADMIN_TOKEN. Both are read, and the difference
+            # is the audit trail: the singular form records every change under
+            # one actor called `shared`, so the trail can say what changed and
+            # when but never who. The plural form is one named,
+            # environment-scoped credential per person or pipeline, and the name
+            # is what lands on the audit row. A deployment worth running probes
+            # against is a deployment worth attributing changes in.
+            #
+            # A secretKeyRef names a key that has to exist: this manifest and
+            # docs/DEPLOY_JETSTREAM_K8S.md have to agree on the spelling or the
+            # pod never starts — CreateContainerConfigError, which reports a
+            # missing key and not which of the two documents is wrong.
+            - name: ADMIN_TOKENS
               valueFrom:
                 secretKeyRef:
                   name: central-config-secrets
-                  key: ADMIN_TOKEN
+                  key: ADMIN_TOKENS
           volumeMounts:
             - name: nats-creds
               mountPath: /etc/nats
               readOnly: true
+          # Every probe below sets timeoutSeconds, because the field defaults to
+          # 1 second and /health is budgeted 2 (healthCheckTimeout, in
+          # internal/app/app.go). Left at the default, a database answering in
+          # 1.5s fails the probe while the handler is still waiting to decide,
+          # and the pod leaves the Service while it is in fact alive and about
+          # to report so. A probe has to outlast the handler it calls, or the
+          # handler's own timeout is never the one that gets to matter.
+          #
+          # startupProbe covers the boot instead of initialDelaySeconds. The
+          # kubelet holds liveness and readiness until this one passes, so the
+          # first connection to PostgreSQL and NATS has up to 30 x 2s — and a
+          # start slower than expected is a slow start rather than a restart —
+          # while the steady-state failureThreshold below stays tight enough to
+          # notice a hung process quickly.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
           # Liveness answers for the process only. /health reports the
           # database and NATS, so pointing liveness at it turns a NATS outage
           # into a crash loop across every replica — taking the admin API's
@@ -75,16 +140,18 @@ spec:
             httpGet:
               path: /livez
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           # Readiness is where a dependency outage belongs: the pod stops
           # taking traffic and stays up to recover.
           readinessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests:
               cpu: 100m

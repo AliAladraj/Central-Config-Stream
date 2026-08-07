@@ -5,6 +5,13 @@ config:
   cluster:
     enabled: true
     replicas: 3
+    # Route traffic is a listener of its own and takes its own tls block. The
+    # one under config.nats below secures clients only, and JetStream
+    # replication between these three servers goes over the routes — securing
+    # one and not the other is the usual half-configuration.
+    # tls:
+    #   enabled: true
+    #   secretName: nats-cluster-tls
 
   jetstream:
     enabled: true
@@ -17,15 +24,43 @@ config:
         # storageClassName: <your-storage-class>
     # memoryStore is left disabled — config must survive restarts.
 
-  # Enable and configure TLS for production. Provide a cert secret and CA.
-  # tls:
-  #   enabled: true
-  #   secretName: nats-server-tls
-  #   ca: "ca.crt"
-  #   cert: "tls.crt"
-  #   key: "tls.key"
+  # Client TLS for production. This lives at config.nats.tls — the block that
+  # configures the client listener — and not at config.tls, which is not a key
+  # the chart reads. That distinction is the whole reason this comment is as
+  # long as it is: the chart ships no values.schema.json, so a stray top-level
+  # key is neither rejected nor warned about. `helm upgrade` exits 0, the pods
+  # roll, and the rendered nats.conf simply has no tls block in it. The failure
+  # is a cluster that was never encrypting anything while its manifest said it
+  # was, and nothing in the output says so.
+  #
+  # The CA is separate, at the top level below, because it is shared: the chart
+  # mounts it into every tls block it renders and into the nats-box contexts.
+  # There is no `ca` key inside this block to hold it.
+  #
+  # nats:
+  #   tls:
+  #     enabled: true
+  #     secretName: nats-server-tls   # keys tls.crt and tls.key
+  #     # mTLS — require a client certificate as well as offering a server one.
+  #     # central-config authenticates with NATS_CREDS, so this is defence in
+  #     # depth rather than the primary control.
+  #     merge:
+  #       verify: true
 
-# Prometheus exporter sidecar for JetStream/stream metrics.
+# The CA the tls blocks above verify against. Top level, not under config: the
+# chart mounts it once and references it from every tls block it renders, which
+# is why those blocks have no ca key of their own.
+# tlsCA:
+#   enabled: true
+#   secretName: nats-ca   # or configMapName, for a CA that is not a secret
+#   key: ca.crt
+
+# Prometheus exporter sidecar for JetStream/stream metrics. Already on: this is
+# the chart's promExporter.enabled, set here rather than left at the chart
+# default of false, so a `helm upgrade` with this file needs no extra --set and
+# no step in a runbook. Scrape :7777 alongside central-config's own /metrics on
+# :8080 — the two answer different questions, stream and consumer state here
+# against publish and reconcile behaviour there.
 promExporter:
   enabled: true
   port: 7777

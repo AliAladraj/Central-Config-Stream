@@ -32,6 +32,16 @@ PG_TEST_NAME := central-config-test-postgres
 PG_TEST_PORT ?= 55432
 PG_TEST_DSN := postgres://postgres:postgres@127.0.0.1:$(PG_TEST_PORT)/central_config_test?sslmode=disable
 
+# The golangci-lint `lint` expects, pinned to the version .github/workflows/ci.yml
+# runs. Two things depend on the pin rather than on "whatever is installed": a
+# new release adds checks, and that should turn a build red on the commit that
+# bumps this line instead of under someone unrelated; and .golangci.yml is a
+# `version: "2"` schema, which a v1 binary rejects outright. Someone who guesses
+# and installs the v1 that most search results still point at gets a schema
+# error rather than a lint run, so `lint` checks the major version and says so.
+GOLANGCI_LINT_VERSION := v2.12.2
+GOLANGCI_LINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 # Build identity, stamped into both binaries by `build` so a running process can
 # say what it is. VERSION, COMMIT and DATE are all overridable — `make build
 # VERSION=v1.2.3` — because a release pipeline knows the version it is cutting
@@ -48,7 +58,7 @@ LDFLAGS = -X $(MODULE)/internal/buildinfo.Version=$(VERSION) \
           -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) \
           -X $(MODULE)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: help build version test test-postgres cover lint fmt ui run console stack clean
+.PHONY: help build version test test-postgres cover lint tools fmt ui run console stack clean
 
 help: ## List the available targets
 	@echo "central-config — make targets"
@@ -81,13 +91,27 @@ test: ## Run the Go test suite with the race detector
 # carries -e) and a cleanup line after it would simply never run. The whole
 # wait-run-clean sequence is therefore one shell invocation; make gives each
 # recipe line its own, and a trap does not survive that.
+#
+# The run is verbose and the skips are counted afterwards, the same check
+# ci.yml makes. The suite fails open by design — with no TEST_POSTGRES_DSN every
+# test skips and the package still reports ok, which is what keeps `make test`
+# green on a machine with no server. That leaves a green run and a run that
+# tested something indistinguishable, so a container that never became healthy
+# or a DSN pointing somewhere unexpected would pass this target having exercised
+# nothing. CI refuses to call that a pass; there is no reason for `make` to be
+# the more forgiving of the two.
+#
+# The log is a mktemp file rather than one in the repository, because the last
+# CI step asserts the working tree is clean and a stray artefact here would be
+# found there instead.
 test-postgres: ## Run the Postgres integration suite against a throwaway container
 	@docker rm -f $(PG_TEST_NAME) >/dev/null 2>&1 || true
 	@echo "==> starting $(PG_TEST_IMAGE) on :$(PG_TEST_PORT)"
 	@docker run -d --rm --name $(PG_TEST_NAME) \
 		-e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=central_config_test \
 		-p $(PG_TEST_PORT):5432 $(PG_TEST_IMAGE) >/dev/null
-	@trap 'docker rm -f $(PG_TEST_NAME) >/dev/null 2>&1 || true' EXIT; \
+	@log=$$(mktemp); \
+	trap 'docker rm -f $(PG_TEST_NAME) >/dev/null 2>&1 || true; rm -f "$$log"' EXIT; \
 	ready=""; \
 	for _ in $$(seq 1 60); do \
 		if docker exec $(PG_TEST_NAME) pg_isready -U postgres -d central_config_test >/dev/null 2>&1; then ready=yes; break; fi; \
@@ -95,7 +119,13 @@ test-postgres: ## Run the Postgres integration suite against a throwaway contain
 	done; \
 	if [ -z "$$ready" ]; then echo "postgres did not become ready in 60s"; exit 1; fi; \
 	echo "==> go test ./internal/pgintegration"; \
-	TEST_POSTGRES_DSN="$(PG_TEST_DSN)" go test -race -count=1 ./internal/pgintegration/
+	TEST_POSTGRES_DSN="$(PG_TEST_DSN)" go test -race -count=1 -v ./internal/pgintegration/ | tee "$$log"; \
+	if grep -q '^--- SKIP' "$$log"; then \
+		echo "the integration suite skipped rather than ran: $(PG_TEST_DSN) did not reach the container"; \
+		grep '^--- SKIP' "$$log"; \
+		exit 1; \
+	fi; \
+	echo "==> ran $$(grep -c '^--- PASS' "$$log" || true) integration tests against a live PostgreSQL"
 
 cover: ## Run tests with coverage and write an HTML report
 	go test -coverprofile=$(COVERAGE) ./...
@@ -115,9 +145,35 @@ lint: ## gofmt check, go vet, golangci-lint, and the web UI's eslint
 	@echo "==> go vet"
 	go vet ./...
 	@echo "==> golangci-lint"
+	@# A clean checkout has no golangci-lint, and a missing-binary error names
+	@# neither the tool's import path nor the version this configuration needs.
+	@# Both are said here instead, so the fix is a line to paste rather than a
+	@# search — and the major-version check catches the likelier failure, which
+	@# is a v1 binary already on the PATH meeting a version:"2" .golangci.yml.
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint is not installed. Run 'make tools', or:"; \
+		echo "  go install $(GOLANGCI_LINT_PKG)"; \
+		exit 1; \
+	fi
+	@have=$$(golangci-lint version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1 || true); \
+	if [ "$$have" != "2" ]; then \
+		echo "golangci-lint v$${have:-?} cannot read .golangci.yml, which is a version: \"2\" schema."; \
+		echo "Install the pinned version with 'make tools', or:"; \
+		echo "  go install $(GOLANGCI_LINT_PKG)"; \
+		exit 1; \
+	fi
 	golangci-lint run
 	@echo "==> eslint"
 	cd webui && npm run lint
+
+# `go install` rather than the upstream install script: the toolchain is already
+# a prerequisite of every other target here, and this way the version installed
+# is the one pinned above and nothing fetches a shell script over the network.
+# It lands in $(go env GOPATH)/bin, which has to be on PATH for `lint` to find
+# it — the recipe says so rather than assuming.
+tools: ## Install the pinned golangci-lint that `lint` needs
+	go install $(GOLANGCI_LINT_PKG)
+	@echo "installed $(GOLANGCI_LINT_VERSION) into $$(go env GOPATH)/bin — add that to PATH if it is not already"
 
 fmt: ## Rewrite Go sources with gofmt
 	gofmt -w .
@@ -130,10 +186,16 @@ run: ## Run the service on :8080 against a local SQLite database
 	NATS_URL=nats://127.0.0.1:4222 PUBLISH_ENABLED=true NATS_REPLICAS=1 \
 	RECONCILE_INTERVAL=60s ADMIN_TOKEN=local-dev-token go run ./cmd/central-config
 
-console: ## Run the test console + embedded NATS on :8090 (needs `make ui` first)
+# PORT is the bare number rather than ":8090", which the console reads the same
+# way — both take their host from BIND_ADDR and so bind loopback here. The bare
+# form is written because it is the one that cannot be misread as a request for
+# every interface, and loopback is what this recipe means: the console proxies
+# the admin token below to the service, and nothing off this machine should be
+# able to spend it.
+console: ## Run the test console + embedded NATS on 127.0.0.1:8090 (needs `make ui` first)
 	NATS_EMBEDDED=true NATS_URL=nats://127.0.0.1:4222 ENVIRONMENT_ID=1 \
 	CENTRAL_CONFIG_URL=http://127.0.0.1:8080 ADMIN_TOKEN=local-dev-token \
-	PORT=:8090 WEB_DIR=web go run ./cmd/testconsole
+	PORT=8090 WEB_DIR=web go run ./cmd/testconsole
 
 stack: ## Bring up the whole stack in Docker (nats + service + console)
 	docker compose -f $(COMPOSE_FILE) up --build

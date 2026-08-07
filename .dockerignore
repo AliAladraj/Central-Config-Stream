@@ -1,0 +1,82 @@
+# What `docker build .` is allowed to send the daemon. Without this file the
+# context is the whole working tree — on a developer's laptop that is ~109 MB,
+# almost all of it webui/node_modules, plus whatever untracked binaries and
+# databases a day's work left lying around. CI never noticed because a fresh
+# checkout has none of it.
+#
+# Two of these entries are correctness rather than speed:
+#
+#   - .env. It is gitignored, so it only ever exists on a laptop, and `COPY . .`
+#     in the build stage would bake a developer's real credentials into an image
+#     layer — where `docker history` can read them back out even though the
+#     runtime stage never copies the file forward.
+#   - webui/node_modules. The ui stage runs `npm ci` and then `COPY webui/ ./`,
+#     which would overwrite the tree npm just installed with whatever a laptop
+#     happens to have. The lockfile stops being the thing that decides.
+#
+# Patterns here are matched against the context root, so `dist` is this
+# repository's dist and not, say, webui/dist.
+
+# Secrets. Mirrors .gitignore; .env.example is documentation and carries no
+# values, but nothing in the build reads it either.
+.env
+.env.*
+*.creds
+*.pem
+
+# Version control and CI. Nothing in the build shells out to git — the
+# Dockerfile takes VERSION/COMMIT/DATE as build args precisely so it does not
+# have to — so .git is weight and nothing else.
+.git
+.gitignore
+.github
+
+# Build output. dist/ is GoReleaser's, web/ is the vite bundle (the ui stage
+# rebuilds it from source), and the two bare binaries are what `make build`
+# leaves at the root.
+dist
+bin
+web
+/central-config
+/testconsole
+*.exe
+*.test
+*.out
+
+# Dependencies that are installed rather than copied.
+node_modules
+webui/node_modules
+
+# Local databases from the SQLite test stack.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Coverage, editor and OS noise.
+coverage.*
+*.cover
+*.coverprofile
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.swp
+
+# Documentation and deployment manifests. LICENSE and README.md stay: they are
+# not in the image either, but they are small and their absence is the sort of
+# thing that breaks a later `COPY LICENSE` with a confusing error.
+docs
+deploy
+migrations
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+Makefile
+.dockerignore
+Dockerfile
+.goreleaser.yaml
+.golangci.yml
+.editorconfig

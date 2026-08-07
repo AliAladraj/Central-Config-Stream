@@ -7,14 +7,13 @@ on:
   push:
     tags: ['v*']
 
-# The only two writes this repository ever needs: `contents` for the release and
-# its assets, `packages` for the GHCR push. Deliberately nothing else — a
+# Nothing is granted workflow-wide. The only two writes this repository ever
+# needs are `contents` for the release and its assets and `packages` for the
+# GHCR push, and they are declared on the one job that performs each — a
 # workflow that can write the repository is one stolen action away from being
-# able to rewrite it, and neither job here reads an issue, a check or a pull
-# request.
-permissions:
-  contents: write
-  packages: write
+# able to rewrite it, and the gate below runs the most third-party code of the
+# three while needing to write nothing at all. No job here reads an issue, a
+# check or a pull request either.
 
 # Grouped like ci.yml, but without cancel-in-progress. A tag is pushed once and
 # the group will almost never have two members; if it somehow does, cancelling
@@ -41,11 +40,41 @@ jobs:
   # This is the Go half of ci.yml, not all of it. gofmt, golangci-lint and the
   # JS suite guard how the source reads, and their opinion of a commit that is
   # already tagged changes nothing about whether the binary is correct; build,
-  # vet and test are the three that decide whether the artefact works.
+  # vet and test are what decide whether the artefact works — together with the
+  # database those tests need, which is why the service container below is
+  # copied from ci.yml rather than treated as a CI-only luxury.
   gate:
     name: build, vet, test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # Read-only: this job publishes nothing. The two write scopes live on the
+    # jobs below that actually need them.
+    permissions:
+      contents: read
+
+    # The same container ci.yml stands up, for the same reason and pinned to the
+    # same tag. Without it internal/pgintegration skips every test and reports
+    # ok, so a gate that is meant to decide whether an artefact works would sign
+    # off on a tree whose production storage path was never executed.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: central_config_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d central_config_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      # Spelled exactly as in ci.yml, 127.0.0.1 included: the service port is
+      # published on the runner's IPv4 loopback only.
+      TEST_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/central_config_test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v7
@@ -64,11 +93,32 @@ jobs:
       - name: go test
         run: go test -race -count=1 ./...
 
+      # ci.yml carries this step and explains why at length: the integration
+      # suite fails open, so a typo'd DSN or an unhealthy container leaves the
+      # step above green while testing nothing. That matters more here than
+      # there — this is the run that decides whether a version number gets
+      # spent.
+      - name: the Postgres suite ran rather than skipped
+        run: |
+          set -eo pipefail
+          log="$RUNNER_TEMP/pgintegration.log"
+          go test -count=1 -v ./internal/pgintegration/ | tee "$log"
+          if grep -q '^--- SKIP' "$log"; then
+            echo "::error::The PostgreSQL integration suite skipped. TEST_POSTGRES_DSN did not reach the service container."
+            grep '^--- SKIP' "$log"
+            exit 1
+          fi
+          echo "ran $(grep -c '^--- PASS' "$log") PostgreSQL integration tests against a live server"
+
   binaries:
     name: binaries and release
     needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # The release and its assets. No `packages` — this job never touches GHCR.
+    permissions:
+      contents: write
 
     steps:
       # fetch-depth: 0 rather than the default shallow clone. GoReleaser derives
@@ -130,6 +180,13 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # `packages` for the GHCR push, `contents: read` because the checkout below
+    # needs it once the workflow-wide default is gone. No `contents: write` —
+    # this job never touches the release.
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - uses: actions/checkout@v7
@@ -193,10 +250,23 @@ jobs:
       # one; until then arm64 is served by the release binaries above, which are
       # genuinely cross-compiled because CGO is out of the picture.
       #
-      # The labels come from metadata-action and are applied with --label, which
-      # takes precedence over the Dockerfile's own LABEL lines. Those stay where
-      # they are: they are what a plain `docker build .` on a laptop produces,
-      # and this workflow is not the only way an image gets built.
+      # metadata-action's labels are applied with --label, which takes
+      # precedence over the Dockerfile's own LABEL lines, and three of them
+      # disagree with what the binary inside the image prints: version would be
+      # `0.1.0` where `--version` says `v0.1.0`, revision the full 40-char sha
+      # where the binary says the 7-char short one, and title
+      # `Central-Config-Stream` — the repository — overwriting the Dockerfile's
+      # deliberate `central-config`, which is the name .goreleaser.yaml builds
+      # every archive from and the name people actually type.
+      #
+      # docs/RELEASING.md tells operators to read the labels as confirmation of
+      # what they pulled, so those three are restated here from the same values
+      # the build-args below stamp into the binary. Repeating a label makes the
+      # last --label win (true of both the classic builder and buildx), so these
+      # override metadata-action's while its other labels — created, source,
+      # url, description — pass through untouched. The Dockerfile's LABEL lines
+      # stay as they are: they are what a plain `docker build .` on a laptop
+      # produces, and this workflow is not the only way an image gets built.
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -205,7 +275,11 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.title=central-config
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ steps.identity.outputs.commit }}
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ steps.identity.outputs.commit }}

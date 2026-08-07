@@ -87,14 +87,18 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# GoReleaser's generated commit list is switched off because CHANGELOG.md is
-# already the answer to "what changed", written as capability rather than commit
-# history. release.yml extracts this tag's section from it and passes the result
-# as --release-notes, so the GitHub release page and the file in the repository
-# cannot disagree.
-changelog:
-  disable: true
-
+# There is deliberately no `changelog:` block here, and adding
+# `changelog: {disable: true}` would empty every release page — do not re-add it.
+# `--release-notes` is read by the changelog pipe itself, which is the pipe that
+# key skips: internal/pipe/changelog.Skip() returns Config.Changelog.Disable, and
+# the skip middleware returns before Run() ever loads ctx.ReleaseNotesFile. So
+# release.yml's CHANGELOG.md extraction is silently discarded and the release
+# body is posted as "\n".
+#
+# Leaving the pipe enabled does not reintroduce the generated commit list that
+# the old comment here was guarding against: Run() sets ctx.ReleaseNotes from the
+# --release-notes file and returns immediately, never reaching buildChangelog().
+# CHANGELOG.md stays the single answer to "what changed" either way.
 release:
   github:
     owner: ErasedKyte

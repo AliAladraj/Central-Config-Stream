@@ -107,11 +107,6 @@ Two things the release does **not** contain, both on purpose:
   been built. The Dockerfile's `testconsole` stage *does* build and copy the
   bundle, but that stage is a local harness and is not pushed — the GHCR image
   is the `central-config` stage, the service alone.
-- **A linux/arm64 image.** The Dockerfile compiles in-image without a
-  `$BUILDPLATFORM`/`$TARGETARCH` split, so an arm64 image would mean running the
-  whole Go build under QEMU on every release. The arm64 *binaries* are real
-  cross-compiles — `CGO_ENABLED=0` throughout, because the Postgres driver
-  (`jackc/pgx/v5`) and SQLite are both pure Go.
 
 ---
 

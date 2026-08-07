@@ -272,7 +272,18 @@ jobs:
         with:
           context: .
           target: central-config
-          platforms: linux/amd64
+          # Both architectures anyone actually runs this on: an amd64 node and
+          # an ARM one (Graviton, an M-series laptop). Published as a single
+          # manifest list, so `docker pull` resolves the right image without the
+          # caller naming a platform — which they had to before, and which
+          # failed outright on ARM rather than degrading.
+          #
+          # This costs almost nothing because the Dockerfile cross-compiles:
+          # the build stage is pinned to $BUILDPLATFORM and Go is told the
+          # target through TARGETOS/TARGETARCH. Emulating an arm64 toolchain
+          # under QEMU instead would be minutes per release for an identical
+          # binary.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |

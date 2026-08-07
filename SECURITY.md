@@ -45,7 +45,7 @@ values live.
 ## Reporting a vulnerability
 
 **Use GitHub's private vulnerability reporting**, from the *Security* tab of
-[the repository](https://github.com/ErasedKyte/Central-Config-Stream), via
+[the repository](https://github.com/AliAladraj/Central-Config-Stream), via
 *Report a vulnerability*. It opens a private advisory visible only to the
 maintainer, which is what you want here: **do not open a public issue for a
 security problem.** GitHub Issues on this repository are world-readable, and an

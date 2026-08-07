@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/localization"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
 )
 
 // The service is exercised against the SQLite repository rather than a stub:

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
 )
 
 func TestRedact(t *testing.T) {

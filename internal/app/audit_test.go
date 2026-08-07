@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/audit"
+	"github.com/AliAladraj/Central-Config-Stream/internal/audit"
 )
 
 type fakeRecorder struct {

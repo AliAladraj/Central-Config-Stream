@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 
 	"github.com/nats-io/nats.go/jetstream"
 )

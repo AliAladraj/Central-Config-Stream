@@ -6,14 +6,14 @@ blank_issues_enabled: false
 
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/ErasedKyte/Central-Config-Stream/security/advisories/new
+    url: https://github.com/AliAladraj/Central-Config-Stream/security/advisories/new
     about: >-
       Privately, through GitHub's vulnerability reporting — visible only to the maintainer. Use this
       for anything that reaches the admin API, widens a token's environment scope, or writes to KV.
       SECURITY.md has the scope, the timelines and what a useful report contains.
 
   - name: Read the documentation first
-    url: https://github.com/ErasedKyte/Central-Config-Stream#documentation
+    url: https://github.com/AliAladraj/Central-Config-Stream#documentation
     about: >-
       The consumer contract, the security model, the observability guide and an honest list of known
       gaps. Several things that look like bugs are documented behaviour — the int/bool split on

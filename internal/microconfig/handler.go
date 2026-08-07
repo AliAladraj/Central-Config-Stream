@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/web"
+	"github.com/AliAladraj/Central-Config-Stream/internal/web"
 )
 
 type Handler struct {

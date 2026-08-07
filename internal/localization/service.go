@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 )
 
 type Service struct {

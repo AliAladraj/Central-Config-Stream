@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/pkg/configclient"
+	"github.com/AliAladraj/Central-Config-Stream/pkg/configclient"
 )
 
 // fallbackToken stands in for a real bearer credential. It is deliberately

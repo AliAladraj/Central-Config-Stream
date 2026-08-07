@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/flagsconfig"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
 
 	natsserver "github.com/nats-io/nats-server/v2/test"
 )

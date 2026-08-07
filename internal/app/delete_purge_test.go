@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
 
 	natsserver "github.com/nats-io/nats-server/v2/test"
 )

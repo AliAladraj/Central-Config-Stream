@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/localization"
+	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
 )
 
 func localizationRepo(t *testing.T, opts ...stackOption) (*localization.PostgresRepository, *stack) {

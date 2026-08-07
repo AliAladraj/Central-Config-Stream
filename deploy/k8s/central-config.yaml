@@ -39,7 +39,7 @@ spec:
           # the pair that quietly does nothing: a node that already holds some
           # older `latest` never fetches the new one, so a rollout leaves the
           # cluster running two versions and reports success.
-          image: ghcr.io/erasedkyte/central-config:latest
+          image: ghcr.io/alialadraj/central-config:latest
           imagePullPolicy: Always
           ports:
             - name: http

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/localization"
+	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
 )
 
 // The handler is wired onto the same SQLite-backed service the service tests

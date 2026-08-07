@@ -202,7 +202,7 @@ jobs:
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       # Lowercase, because GHCR requires it and the repository is not:
-      # ghcr.io/erasedkyte/central-config, from ErasedKyte/Central-Config-Stream.
+      # ghcr.io/alialadraj/central-config, from AliAladraj/Central-Config-Stream.
       #
       # `latest` comes from the default latest=auto: a plain vX.Y.Z moves it, a
       # pre-release tag like v0.2.0-rc.1 does not. That is the same question
@@ -218,7 +218,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/erasedkyte/central-config
+          images: ghcr.io/alialadraj/central-config
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

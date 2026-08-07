@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/flagsconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
 )
 
 func newTestRepo(t *testing.T) (*flagsconfig.SQLiteRepository, *sql.DB) {

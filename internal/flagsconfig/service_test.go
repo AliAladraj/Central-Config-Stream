@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
 )
 
 type fakeRepo struct {

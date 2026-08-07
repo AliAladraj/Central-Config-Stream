@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 )
 
 func microRepo(t *testing.T, opts ...stackOption) (*microconfig.PostgresRepository, *stack) {

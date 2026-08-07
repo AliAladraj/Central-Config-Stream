@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/app"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/app"
+	"github.com/AliAladraj/Central-Config-Stream/internal/buildinfo"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 
 	"github.com/joho/godotenv"
 )

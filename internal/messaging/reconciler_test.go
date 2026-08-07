@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 )
 
 // capturePublisher records publish calls and stands in for the KV buckets: it

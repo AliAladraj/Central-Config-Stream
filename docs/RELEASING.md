@@ -89,7 +89,7 @@ Three jobs. The first is a gate and the other two only start if it passes.
 |---|---|
 | **gate** | nothing — `go build`, `go vet`, `go test -race` on the tagged tree, against the same `postgres:17-alpine` service container CI uses, with the same check that `internal/pgintegration` ran rather than skipped |
 | **binaries and release** | the GitHub release: `central-config` and `testconsole` for linux and darwin × amd64 and arm64, one `.tar.gz` per binary per platform with `LICENSE` and `README.md` inside, plus `checksums.txt`. Release notes are this tag's `CHANGELOG.md` section, nothing generated |
-| **image to GHCR** | `ghcr.io/erasedkyte/central-config`, tagged `latest`, `0.1.0`, `0.1` and `sha-<short>` |
+| **image to GHCR** | `ghcr.io/alialadraj/central-config`, tagged `latest`, `0.1.0`, `0.1` and `sha-<short>` |
 
 Everything is stamped from the same three values the `Makefile` computes, via
 the same `-ldflags -X` into `internal/buildinfo`, so an image and a downloaded
@@ -117,13 +117,13 @@ Two things the release does **not** contain, both on purpose:
 gh release view v0.1.0
 
 # the image is there and knows what it is
-docker run --rm ghcr.io/erasedkyte/central-config:0.1.0 --version
+docker run --rm ghcr.io/alialadraj/central-config:0.1.0 --version
 # central-config v0.1.0 (commit 1a2b3c4, built 2026-08-12T09:14:02Z)
 
 # and the labels agree with it: title central-config, version v0.1.0 and
 # revision the same short commit the line above printed
 docker inspect --format '{{json .Config.Labels}}' \
-  ghcr.io/erasedkyte/central-config:0.1.0
+  ghcr.io/alialadraj/central-config:0.1.0
 
 # a downloaded binary says the same thing, and matches its checksum
 shasum -a 256 -c checksums.txt --ignore-missing

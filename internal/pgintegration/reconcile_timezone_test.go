@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/flagsconfig"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/localization"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
+	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 )
 
 // nonUTCZones are the session time zones the reconcile window is exercised

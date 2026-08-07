@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
 )
 
 func decodeHealth(t *testing.T, a *App) (int, map[string]string) {

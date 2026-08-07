@@ -17,8 +17,8 @@ body:
         **Not for security problems.** A defect that reaches the admin API, widens a token's
         environment scope, or writes to a KV bucket is a way to change production, and issues here
         are world-readable. Report those privately from the
-        [Security tab](https://github.com/ErasedKyte/Central-Config-Stream/security) —
-        [`SECURITY.md`](https://github.com/ErasedKyte/Central-Config-Stream/blob/HEAD/SECURITY.md)
+        [Security tab](https://github.com/AliAladraj/Central-Config-Stream/security) —
+        [`SECURITY.md`](https://github.com/AliAladraj/Central-Config-Stream/blob/HEAD/SECURITY.md)
         says why and what a useful report contains.
 
         The bundled test console (`cmd/testconsole`, `webui/`) is a development tool, not a

@@ -360,6 +360,6 @@ a cost and a fix.
 <!-- Neither URL resolves until v0.1.0 is tagged: there is no release and no
      tag to compare against. Both become live the moment there is. -->
 
-[Unreleased]: https://github.com/ErasedKyte/Central-Config-Stream/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/ErasedKyte/Central-Config-Stream/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/ErasedKyte/Central-Config-Stream/releases/tag/v0.1.0
+[Unreleased]: https://github.com/AliAladraj/Central-Config-Stream/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/AliAladraj/Central-Config-Stream/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/AliAladraj/Central-Config-Stream/releases/tag/v0.1.0

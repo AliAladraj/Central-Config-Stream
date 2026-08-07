@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/localization"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/localization"
+	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 )
 
 // documentSize is the size of the settings tree and translation bundle the

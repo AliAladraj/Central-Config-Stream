@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/web"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/web"
 )
 
 // requestIDHeader carries the correlation id in both directions: an inbound

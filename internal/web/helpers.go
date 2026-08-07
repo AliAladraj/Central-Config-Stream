@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 )
 
 // webLog reports failures that happen after the status line is already on the

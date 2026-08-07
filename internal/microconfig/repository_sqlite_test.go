@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 )
 
 func newTestRepo(t *testing.T) (*microconfig.SQLiteRepository, *sql.DB) {

@@ -1,4 +1,4 @@
-module github.com/ErasedKyte/Central-Config-Stream
+module github.com/AliAladraj/Central-Config-Stream
 
 go 1.26
 

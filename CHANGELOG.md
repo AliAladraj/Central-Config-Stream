@@ -15,10 +15,10 @@ that only lists wins is a changelog you have to check the code against anyway.
 
 ## [Unreleased]
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-08-07
 
-Not yet tagged, so everything currently in the repository is listed under it and
-`## [Unreleased]` above is deliberately empty.
+The first tagged release. Everything in the repository at the tag is listed
+under it, and `## [Unreleased]` above is deliberately empty.
 
 There is no earlier version to have fixed anything from, so there is no
 **Fixed** section: the hardening that happened during development —

@@ -27,7 +27,7 @@ the image gets no bare `0` tag.
 section being released still reads:
 
 ```
-## [0.1.0] — UNRELEASED — tag pending
+## [0.1.0] — unreleased
 ```
 
 Replace the suffix with the release date, in ISO form and in the em-dashed shape
@@ -37,13 +37,17 @@ the rest of the file uses:
 ## [0.1.0] — 2026-08-12
 ```
 
-The workflow matches on `## [0.1.0]` and stops at the next `##`, so the suffix
-does not change whether the extraction works — it changes what the release page
-says. A release announced as `UNRELEASED — tag pending` is the kind of detail
-that makes people distrust the rest of the page.
+The workflow matches on `## [0.1.0]` and stops at the next `##`, and it skips
+the heading line itself — so the suffix reaches neither the extraction nor the
+release page, and leaving it in place breaks nothing. It stays wrong in
+`CHANGELOG.md`, though, which is the copy people read in the repository and in
+every fork of it, permanently announcing a shipped version as unreleased.
 
-Then leave `## [Unreleased]` in place above it with nothing under it, so the
-next change has somewhere obvious to land.
+`## [Unreleased]` above it is deliberately empty and stays that way, so the next
+change has somewhere obvious to land. The two link definitions at the foot of
+the file resolve for the first time at this point too; until a tag exists,
+neither a `compare/v0.1.0...HEAD` nor a `releases/tag/v0.1.0` URL has anything
+to point at.
 
 **Merge that, and check CI is green on the commit you are about to tag.** The
 workflow re-runs the gate anyway, but finding out here costs a push and finding
@@ -61,10 +65,14 @@ git tag -a v0.1.0 -m "central-config v0.1.0"
 git push origin v0.1.0
 ```
 
-Annotated (`-a`), not lightweight. An annotated tag carries a tagger, a date and
-a message of its own, and `git describe --tags` — which is where the version
-stamped into every binary comes from — reads it as a first-class object rather
-than as a stray ref that happens to look like one.
+Annotated (`-a`), not lightweight. An annotated tag is a real object in the
+repository carrying a tagger, a date and a message of its own, so the record of
+who cut a release and when survives in the history rather than only in whatever
+GitHub displays. Note that this is not what `--tags` is about: `git describe
+--tags` — which is where the version stamped into every binary comes from — is
+precisely the flag that tells `describe` to consider *lightweight* tags too, so
+a lightweight tag would still produce the right version string. The reason to
+annotate is the metadata, not the describe.
 
 The tag name is the version with a `v`. That prefix is load-bearing in three
 places: it is the workflow's trigger pattern, it is what `git describe` returns
@@ -79,13 +87,17 @@ Three jobs. The first is a gate and the other two only start if it passes.
 
 | job | what it produces |
 |---|---|
-| **gate** | nothing — `go build`, `go vet`, `go test -race` on the tagged tree |
+| **gate** | nothing — `go build`, `go vet`, `go test -race` on the tagged tree, against the same `postgres:17-alpine` service container CI uses, with the same check that `internal/pgintegration` ran rather than skipped |
 | **binaries and release** | the GitHub release: `central-config` and `testconsole` for linux and darwin × amd64 and arm64, one `.tar.gz` per binary per platform with `LICENSE` and `README.md` inside, plus `checksums.txt`. Release notes are this tag's `CHANGELOG.md` section, nothing generated |
 | **image to GHCR** | `ghcr.io/erasedkyte/central-config`, tagged `latest`, `0.1.0`, `0.1` and `sha-<short>` |
 
 Everything is stamped from the same three values the `Makefile` computes, via
 the same `-ldflags -X` into `internal/buildinfo`, so an image and a downloaded
-binary of one release answer `--version` identically.
+binary of one release report the same version and the same commit. The build
+timestamp is the one field that will differ: the two jobs run in parallel and
+each computes its own `date -u`, so expect them to disagree by seconds. Compare
+the version and the commit; the timestamp records when that artefact was built,
+not which release it belongs to.
 
 Two things the release does **not** contain, both on purpose:
 
@@ -113,7 +125,8 @@ gh release view v0.1.0
 docker run --rm ghcr.io/erasedkyte/central-config:0.1.0 --version
 # central-config v0.1.0 (commit 1a2b3c4, built 2026-08-12T09:14:02Z)
 
-# and the labels agree with it
+# and the labels agree with it: title central-config, version v0.1.0 and
+# revision the same short commit the line above printed
 docker inspect --format '{{json .Config.Labels}}' \
   ghcr.io/erasedkyte/central-config:0.1.0
 

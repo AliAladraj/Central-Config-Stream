@@ -1,23 +1,26 @@
 # Observability
 
-central-config emits ECS-shaped JSON logs on stdout and Prometheus metrics on
-`GET /metrics`. Both are standard library only — there is no logging or metrics
-dependency in `go.mod`, and adding one is not required to ship this to Elastic.
+central-config emits ECS-shaped JSON logs on stdout — unless `LOG_FORMAT=text`,
+which is what the compose stack sets — and Prometheus metrics on `GET /metrics`.
+Both are standard library only: there is no logging or metrics dependency in
+`go.mod`, and adding one is not required to ship this to Elastic.
 
 ---
 
 ## 1. Logging
 
-`log/slog` with a JSON handler whose built-in keys are remapped to their ECS
-names (`internal/obs/log.go`). Every line goes to **stdout**, one JSON document
-per line, which is what a container log shipper expects.
+`log/slog`. In the default JSON mode the handler's built-in keys are remapped to
+their ECS names (`internal/obs/log.go`); every line goes to **stdout**, one JSON
+document per line, which is what a container log shipper expects.
 
 ### Schema
+
+**This table is JSON mode.** Text mode is a different shape — see below.
 
 | Field | Meaning |
 | --- | --- |
 | `@timestamp` | RFC 3339 event time |
-| `log.level` | `debug` / `info` / `warn` / `error` |
+| `log.level` | `debug` / `info` / `warn` / `error`, lowercased |
 | `message` | the event, as a short constant string — values live in fields, not in here |
 | `service.name` | `SERVICE_NAME`, default `central-config` |
 | `service.version` | `SERVICE_VERSION`, default `dev` |
@@ -29,7 +32,35 @@ per line, which is what a container log shipper expects.
 Access lines (`message: "http request"`, one per request) add
 `http.request.method`, `url.path`, `http.route` (the matched route pattern),
 `http.response.status_code`, `event.duration` (nanoseconds, per ECS),
-`client.ip`, and `user.name` when the caller authenticated.
+`client.ip`, and — on **authenticated writes only** — `user.name`.
+
+That last restriction is worth knowing before you build a dashboard on it. The
+actor is recorded by the *write* guard, which is also what feeds the audit
+trail's `ACTOR`, so an authenticated `GET` carries no `user.name` however
+plainly it identified itself. A rejected credential carries none either, because
+the 401 returns before the actor is known; a `429` and a `403` from a scope
+mismatch both do carry it, because those are decided after. **To attribute
+reads, use `GET /audit`'s absence of them and the access log's `client.ip` —
+there is no per-actor read trail.**
+
+### The text mode is not this schema
+
+`LOG_FORMAT=text` selects `slog`'s own text handler with none of the remapping
+above, for a line a human reads in a terminal. Concretely, in text mode:
+
+- `@timestamp`, `log.level` and `message` **do not exist**. They are `slog`'s
+  own `time`, `level` and `msg`, and `level` keeps its uppercase spelling —
+  `level=INFO`, not `log.level=info`.
+- `service.name` and `service.version` **are not emitted at all**. They are
+  attached by the JSON handler and nothing else adds them.
+- Everything else is unchanged: `event.dataset`, `http.request.id`,
+  `error.message`, `error.stack_trace`, `http.route`, `user.name` and the domain
+  fields are ordinary attributes written with those names at the call site.
+
+So a shipper configured for the table above finds nothing to key on in text
+mode. That is the intended trade — `deploy/compose/docker-compose.yml` sets it
+so `docker compose logs` stays readable — but it means the format is a
+deployment decision, not a preference.
 
 Domain lines add what the event is about: `flag.key`, `kv.key`, `bucket`,
 `source`, `environment.id`, `microservice.id`, `locale`, `count`, `sweep`.
@@ -75,18 +106,25 @@ bucket has no row behind it`, with `bucket`, `stale`, `keys` and `limit`). A
 sweep that reports a whole domain by name leaves an operator a domain to search;
 these leave a key.
 
-`GET /health`, `GET /livez` and `GET /metrics` access lines are `debug` — an
-orchestrator probing every few seconds, on two endpoints, would otherwise be
-most of the log volume.
+The access lines for the three probe routes — `GET /health`, `GET /livez` and
+`GET /metrics` — are `debug`. An orchestrator hitting all three every few
+seconds would otherwise be most of the log volume. The route match is what
+decides this, ahead of the status, so a `GET /metrics` that returns 500 is still
+a debug line.
 
 ### Environment variables
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `json` | `json` = ECS for Elasticsearch; `text` = readable key=value for a terminal |
-| `SERVICE_NAME` | `central-config` | `service.name` |
-| `SERVICE_VERSION` | `dev` | `service.version`; set it to the image tag |
+| `LOG_LEVEL` | `info` | `debug`, `warn` (or `warning`), `error`. Case-insensitive and trimmed. **Anything else — `trace`, `verbose`, a typo — is silently `info`**, which is also how `info` itself is reached: it is the fallback, not a case. |
+| `LOG_FORMAT` | `json` | **Only `text` is matched**, case-insensitively but *not* trimmed. Every other value — including `json` itself, `" text"` with a leading space, and any typo — falls through to the ECS JSON handler. Nothing validates either variable or warns about an unrecognised value. |
+| `SERVICE_NAME` | `central-config` | `service.name`, JSON mode only |
+| `SERVICE_VERSION` | `dev` | `service.version`, JSON mode only; set it to the image tag |
+
+The failure that asymmetry produces is worth naming: a mistyped `LOG_FORMAT`
+gives you production JSON where you wanted a readable terminal, which is
+annoying but obvious. A mistyped `LOG_LEVEL=dbeug` gives you `info`, which looks
+exactly like a service that has nothing more to say.
 
 `deploy/compose/docker-compose.yml` sets `LOG_FORMAT=text` so `docker compose
 logs` stays readable; `deploy/k8s/central-config.yaml` sets `LOG_FORMAT=json`.
@@ -169,22 +207,29 @@ tracks reality only as often as something probes readiness.
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
-| `centralconfig_http_requests_total` | `method`, `route`, `status` | `route` is the matched `ServeMux` pattern (`PUT /flags/values`), or `other` for an unmatched path |
+| `centralconfig_http_requests_total` | `method`, `route`, `status` — three, in that order | `route` is the matched `ServeMux` pattern (`PUT /flags/values`); `status` is the code as a string |
 | `centralconfig_http_request_duration_seconds` | `method`, `route` | histogram, seconds |
 | `centralconfig_http_panics_total` | `route` | recovered handler panics |
 
-**Both labels are bounded on purpose, and each was a way to grow the process's
-memory from outside it.** A metric label allocates a series that lives as long
-as the process, and both parts of a request line are caller input:
+**Two of those three labels are bounded on purpose, and each was a way to grow
+the process's memory from outside it.** A metric label allocates a series that
+lives as long as the process, and both `method` and `route` come from the
+request line, which is caller input. `status` needs no bounding: the service
+chooses it.
 
 - `route` is resolved by asking the mux which pattern the request matched, so
   the label set is bounded by the routing table. An unmatched path is `other`,
   which is why a path scanner shows up as one series rather than thousands.
 - `method` is checked against the nine HTTP verbs and anything else becomes
-  `other`. Without that, `curl -X <anything>` against an open route — `/health`
-  or `/metrics`, neither of which needs a token — is unauthenticated,
-  unrate-limited memory growth, and a `/metrics` body that keeps getting slower
-  to scrape.
+  `other` **as well** — the same literal, on a different label. Without that,
+  `curl -X <anything>` against an open route — `/health` or `/metrics`, neither
+  of which needs a token — is unauthenticated, unrate-limited memory growth, and
+  a `/metrics` body that keeps getting slower to scrape. The comparison is
+  case-sensitive against Go's constants, so a lowercase `get` is `other` too.
+
+So `{method="other",route="other"}` is one series and means "an unrecognised
+verb at a path that matches no route" — a scanner, near enough always. Do not
+read `other` on one label as saying anything about the other.
 
 ### Database
 

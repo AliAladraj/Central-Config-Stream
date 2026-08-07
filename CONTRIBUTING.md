@@ -46,25 +46,44 @@ suite against a service container and fails if it skipped.
 
 `make help` lists every target, and CI runs the same checks on every pull
 request. Run them locally before opening one — `make build`, `make test` and
-`make lint` cover the Go side, and the commands below are what they invoke.
+`make lint` cover it, and the commands below are what they invoke.
 
 ```bash
-# Go — from the repository root
-gofmt -l .          # must print nothing
-go build ./...
+# make build
+go build ./...      # plus two -ldflags binary builds; see Version stamping
+
+# make test
+go test -race -count=1 ./...   # the reconciler, the rate limiter and configclient
+                               # are all concurrent; -count=1 defeats the cache
+
+# make lint — all four, in this order, and it stops at the first failure
+gofmt -l .                     # must print nothing (node_modules excluded)
 go vet ./...
-go test ./...
-go test -race ./...  # the reconciler, the rate limiter and configclient are all concurrent
+golangci-lint run              # configured in .golangci.yml; v2 required
+cd webui && npm run lint       # eslint, config at webui/eslint.config.js
 ```
 
+`make lint` is the one people are surprised by: `golangci-lint` is the
+centrepiece of it, and the last step runs the web UI's ESLint, so the target
+needs `webui/node_modules` present — run `npm ci` in `webui/` once. It also
+checks that the `golangci-lint` on your `PATH` is a v2, because `.golangci.yml`
+is a v2 schema and a v1 binary fails in a way that reads like a code problem.
+`make tools` installs the pinned version.
+
+The web UI has two more of its own, which `make lint` does not run:
+
 ```bash
-# the web console UI
 cd webui
-npm ci
-npm run lint
-npm test
+npm test            # vitest
 npm run build       # writes ../web
 ```
+
+CI runs all of the above and three checks that have no `make` target: the
+`--- SKIP` guard on the Postgres suite (below), `go mod tidy` leaving `go.mod`
+and `go.sum` unchanged, and a clean working tree afterwards, so no build
+artefact escaped `.gitignore`. It re-implements the recipes inline rather than
+calling `make`, so the `Makefile` and `.github/workflows/ci.yml` have to be
+changed together.
 
 `go test ./...` starts a real embedded JetStream server for the messaging and
 end-to-end tests, so it needs a free loopback port and takes appreciably longer
@@ -167,10 +186,17 @@ central-config with an admin token attached by the console process, so the
 browser never holds one.
 
 It is a development tool and **not a deployment target**. It is as powerful as
-the token it carries, which is why it binds to loopback, refuses cross-origin
-requests and forwards only JSON to an allowlisted set of paths. Do not add
-capability to it that would be dangerous if it were exposed, on the assumption
-that it never will be. See [`docs/SECURITY.md`](docs/SECURITY.md).
+the token it carries, which is why it binds to loopback, refuses a `Host` it was
+not configured to answer to, refuses cross-origin requests and forwards only
+JSON to an allowlisted set of paths. Do not add capability to it that would be
+dangerous if it were exposed, on the assumption that it never will be. See
+[`docs/SECURITY.md`](docs/SECURITY.md).
+
+Two of those bite during development. `PORT=:8090` above binds **loopback**, not
+every interface — the console reads `PORT` against `BIND_ADDR` and only a `PORT`
+naming a host widens it — so reaching the console from another machine takes
+`BIND_ADDR` *and* an `ALLOWED_HOSTS` entry naming it, or the `Host` check
+answers 403. `/api/state` and `/api/events` are behind that check too.
 
 ---
 
@@ -183,15 +209,22 @@ Real examples from its history:
 feat(messaging): JetStream KV write-through distribution
 fix(security): authenticate and scope reads, and harden the rate limiter
 fix(reliability): make reconciliation fault-tolerant and decouple liveness from NATS
-docs: add the README, licence placeholder and operator guides
+docs: add code of conduct, issue forms and contribution templates
+ci: release binaries and a container image from a version tag
 test: end-to-end coverage of the write-through path
 chore: initialize Go module and project layout
 ```
 
-Types in use: `feat`, `fix`, `docs`, `test`, `chore`, `refactor`. Scopes in use:
-`messaging`, `security`, `reliability`, `api`, `db`, `config`, `obs`, `deploy`,
-`webui`. Add a scope when the change is confined to one of those; leave it off
-when it is not.
+Types in use, in descending order of how often: `chore`, `feat`, `docs`, `fix`,
+`test`, `ci`. Scopes in use: `deps` and `deps-dev` (Dependabot's, and between
+them the most common), then `security`, `db`, `messaging`, `reliability`, `api`,
+`config`, `obs`, `deploy`, `webui`, `configclient`. Add a scope when the change
+is confined to one of those; leave it off when it is not.
+
+Those two lists are what the history actually contains rather than what would
+look tidy — `refactor` is a perfectly good Conventional Commits type and this
+repository has never used one, so it is not listed. If you write the first, add
+it here.
 
 The subject is a lowercase imperative phrase with no trailing full stop. Keep
 the body for *why*, especially when the change closes a failure mode — that
@@ -223,21 +256,28 @@ reasoning is often the only record of what the code is defending against.
 
 ### On test coverage
 
-The three config domains carry the same three test files each, so there is no
-thinner one to match by accident:
+The three config domains carry the same three test files each, and — now — a
+comparable amount in them, so there is no thinner one to match by accident:
 
 | Package | What exists |
 |---|---|
 | `internal/flagsconfig` | service, handler and SQLite repository tests |
 | `internal/microconfig` | service, handler and SQLite repository tests |
 | `internal/localization` | service, handler and SQLite repository tests |
-| `internal/pgintegration` | all three PostgreSQL repositories and the audit store, against a live server |
+| `internal/pgintegration` | all three PostgreSQL repositories and the audit store against a live server, plus one end-to-end case driving the whole service over it |
 | `internal/app` | auth and scope middleware, read scoping, rate limiting, audit, liveness, observability, reconcile partial/prune, end-to-end stack |
 | `internal/messaging` | keys, publisher (including skip and revision conflict), reconciler (prune, refusal, mid-sweep writes) |
 | `pkg/configclient` | scoping and a full integration test against embedded JetStream |
 
-`flagsconfig` is still the one to read first, because the split is the same in
-all three: `service_test.go` for validation and publish behaviour,
+"Same three files" is the shape, not the measure, and it is worth saying that
+the sentence above was untrue until recently: `flagsconfig/handler_test.go` had
+two test functions against the other two domains' eleven each, so the file
+existed and covered almost nothing, and this document pointed newcomers at it as
+the example to copy. It is now level with them. If you find yourself matching a
+neighbouring domain's file *list*, count the cases too.
+
+`flagsconfig` is the one to read first, because the split is the same in all
+three: `service_test.go` for validation and publish behaviour,
 `handler_test.go` for status-code mapping, `repository_sqlite_test.go` for the
 SQL. A fourth domain gets the same three files, **plus a case in
 `internal/pgintegration`** — the Postgres repositories are the ones a deployment
@@ -250,10 +290,19 @@ otherwise be copied four times, and Go cannot share a helper that lives in a
 `_test.go` file. Each test gets a fresh schema of its own, so tests do not have
 to coordinate over identity sequences or the reference-table delete guards.
 
-**What that suite still does not cover is everything above the repositories.**
-`internal/app`'s end-to-end and handler tests run on SQLite alone, so the
-routing, scoping and publish wiring is verified against the mirror schema rather
-than the real one (`docs/PRODUCTION_READINESS.md` §3.1).
+**What that suite barely covers is anything above the repositories.** The one
+exception is `app_scope_test.go`, which builds the whole service through
+`app.NewApp` over the real database and drives token scoping, the
+row-environment lookup and the audit insert through HTTP. It exists because that
+lookup picks its bind placeholder from the same `DBDriver` flag every
+`internal/app` test sets to `"sqlite"`, so the branch a deployment runs was
+reachable from no test at all — and what was in it was `:1` where pgx wants
+`$1`, which Postgres rejects outright, which made the guard refuse every scoped
+token every row-addressed write. Everything else in `internal/app` still runs on SQLite
+alone, so the rest of the routing and publish wiring is verified against the
+mirror schema rather than the real one (`docs/PRODUCTION_READINESS.md` §3.1).
+If you add a branch that keys off `DBDriver`, assume nothing else will execute
+the Postgres side of it.
 
 ---
 
@@ -261,9 +310,9 @@ than the real one (`docs/PRODUCTION_READINESS.md` §3.1).
 
 Flags, appsettings and localization are three instances of one shape, and the
 shape is spread across the codebase rather than abstracted. Adding a fourth —
-say routing rules, or per-service rate limits — touches **around 45 sites in 13
-existing files**, plus a new package of its own, a case in the PostgreSQL
-integration suite, and the web console.
+say routing rules, or per-service rate limits — touches **around 45 sites in 12
+existing files** (§3–§13), plus a new package of its own, a new migration, five
+documents, a case in the PostgreSQL integration suite, and the web console.
 
 Roughly half of those sites do not fail to compile if you miss them. They fail
 at runtime, and several fail *silently*: the write returns `200`, the row is in

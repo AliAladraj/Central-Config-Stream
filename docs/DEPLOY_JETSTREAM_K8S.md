@@ -50,12 +50,17 @@ helm upgrade --install nats nats/nats \
   -f deploy/k8s/nats-values.yaml
 ```
 
-Wait for all 3 pods:
+Wait for the 3 servers:
 
 ```bash
 kubectl -n messaging rollout status statefulset/nats
-kubectl -n messaging get pods -l app.kubernetes.io/name=nats
+kubectl -n messaging get pods -l app.kubernetes.io/component=nats
 ```
+
+The component label rather than `app.kubernetes.io/name=nats`, which returns
+**four** pods: the chart also deploys `nats-box`, a utility pod carrying the
+`nats` CLI, and it wears the same `name` label as the servers. Counting on that
+selector and expecting three is a false alarm every time.
 
 The in-cluster URL will be:
 
@@ -85,9 +90,9 @@ You should see JetStream `enabled` and 3 servers in the cluster.
 
 ## 4. Security: accounts & credentials
 
-> [`docs/SECURITY.md`](SECURITY.md) §2 is the authority on this. What follows
-> is how to apply it on Kubernetes; if the two ever disagree, that document is
-> right.
+> [`docs/SECURITY.md`](SECURITY.md#the-account-and-permission-model-that-closes-both)
+> is the authority on this. What follows is how to apply it on Kubernetes; if
+> the two ever disagree, that document is right.
 
 Give `central-config` **write** on the config buckets and consumers **read/watch
 only**. With JetStream KV, a bucket `FLAGS` is backed by stream `KV_FLAGS` and
@@ -118,13 +123,32 @@ so a subject filter narrows a consumer to its own configuration:
 
 ```
 # consumer: cart-api (microservice id 2), environment 3 (prod)
-publish:   "$JS.API.STREAM.INFO.*", "$JS.API.CONSUMER.CREATE.*",
-           "$JS.API.DIRECT.GET.*"
+publish:   "$JS.API.STREAM.INFO.*", "$JS.API.CONSUMER.CREATE.>",
+           "$JS.API.DIRECT.GET.>"
 subscribe: "$KV.FLAGS.3.>",
            "$KV.MICROCONFIG.3.2",
            "$KV.LOCALIZATION.3.2.*",
            "_INBOX.>"
 ```
+
+**`>` and not `*` on the last two publish subjects.** `*` matches exactly one
+token, and what `nats.go` actually sends is
+`$JS.API.CONSUMER.CREATE.<stream>.<consumer>` — with a third `.<filter subject>`
+when the watch is filtered, and a KV filter subject is dotted itself — and
+`$JS.API.DIRECT.GET.<stream>.<message subject>`, which is how a KV `Get` reads a
+key. Both carry more than one token after the prefix, so a `*` there matches
+none of the real subjects and denies every watch. `$JS.API.STREAM.INFO.*` is
+correct as written, because a stream name is a single token. The failure this
+prevents is quiet in the way that costs the most time: the consumer connects,
+the watch is created and never delivers, and nothing on either side logs an
+error the operator will find.
+
+Note also that consumers **publish**. A KV watch is not a plain subscription —
+JetStream's API is request/reply, so a watcher publishes to `$JS.API.…` to read
+the stream's metadata and create its consumer. A blanket `publish` deny on a
+consumer credential is the intuitive shape and it breaks watching outright; the
+allow list above is already a deny for the `$KV.*` subjects, which is the part
+that matters.
 
 Flags stay environment-wide because flags are not per-service. Appsettings and
 localization become per-service, which is what closes the leak. The environment
@@ -137,7 +161,9 @@ to issue and rotate, and that is the actual cost of the model; `nsc` and a
 templated issuing step make it routine. Consumers should live in a **separate
 account** from `CONFIG`, reaching the buckets through explicit exports and
 imports, so the account boundary rather than a subject string is the default
-deny — see [`docs/SECURITY.md`](SECURITY.md) §2 for the account layout.
+deny — see
+[`docs/SECURITY.md`](SECURITY.md#the-account-and-permission-model-that-closes-both)
+for the account layout.
 
 A fleet-wide `$KV.*.>` subscription is the shape the local compose stack and the
 test console use, because there is one machine, one operator and nothing to
@@ -155,8 +181,17 @@ kubectl create secret generic nats-consumer-creds \
   --from-file=nats.creds=./cart-api-prod.creds
 ```
 
-Enable **TLS** to the cluster in `nats-values.yaml` (`tls` block) and mount the
-CA into clients. For local/dev you can skip creds and TLS entirely.
+Enable **TLS** to the cluster in `nats-values.yaml` and mount the CA into
+clients. The key is **`config.nats.tls`** — the block that configures the client
+listener — with the CA at the top-level **`tlsCA`**, because the chart mounts
+that once and references it from every `tls` block it renders. A top-level `tls`
+is not a key this chart reads, and it ships no `values.schema.json`, so a stray
+one is neither rejected nor warned about: `helm upgrade` exits 0, the pods roll,
+and the rendered `nats.conf` simply has no TLS in it. Cluster-route traffic
+takes its own `config.cluster.tls`; JetStream replication goes over the routes,
+so securing the client listener alone is the usual half-configuration. All four
+blocks are commented out in the shipped values file with this spelled out beside
+them. For local/dev you can skip creds and TLS entirely.
 
 ---
 
@@ -200,7 +235,15 @@ secret may contain colons but **not a comma**, and a name is limited to letters,
 digits, dot, dash and underscore. [`docs/SECURITY.md`](SECURITY.md) explains why
 both are checked.
 
-Apply the Deployment + Service ([`deploy/k8s/central-config.yaml`](../deploy/k8s/central-config.yaml)):
+Apply the Deployment + Service ([`deploy/k8s/central-config.yaml`](../deploy/k8s/central-config.yaml)).
+
+**Set `image:` first.** The manifest names
+`ghcr.io/erasedkyte/central-config:latest`, and **no image has been published
+yet** — nothing is tagged, so there is no release and no GHCR package (see
+[`docs/RELEASING.md`](RELEASING.md)). Applied as shipped, the pod sits in
+`ImagePullBackOff`. Point it at an image you built and pushed yourself, or at a
+released tag once one exists; either way pin a version rather than `latest`, so
+a rollout is a decision rather than whatever the registry last answered.
 
 ```bash
 kubectl -n central-config apply -f deploy/k8s/central-config.yaml
@@ -336,8 +379,12 @@ contract is specified in [`CONSUMER_CONTRACT.md`](CONSUMER_CONTRACT.md).
   how many keys it republishes each sweep, and names any key it could not
   publish.
 - **JetStream monitoring:** `nats server report jetstream`, and scrape the NATS
-  Prometheus exporter (enable `exporter` in the Helm values) for stream/consumer
-  and storage metrics.
+  Prometheus exporter for stream/consumer and storage metrics. It is
+  `promExporter` in the Helm values and the shipped `nats-values.yaml` **already
+  enables it** on port 7777 — the chart default is off, so this is a setting
+  rather than a step. Scrape `:7777` alongside central-config's own `/metrics`
+  on `:8080`; the two answer different questions, stream and consumer state
+  against publish and reconcile behaviour.
 - **Backups:** PostgreSQL is the system of record — whatever you already run,
   `pg_dump` or continuous archiving, covers correctness. KV can always be
   rebuilt by the reconciler. Optionally snapshot streams with
@@ -350,7 +397,7 @@ contract is specified in [`CONSUMER_CONTRACT.md`](CONSUMER_CONTRACT.md).
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | `/health` returns 503, pods stay up | NATS unreachable / creds wrong / PostgreSQL unreachable | check `NATS_URL`, creds secret, cluster pods, `CONN_STRING`. Pods staying up is correct — reads still work |
-| Buckets not created | JetStream disabled or no write perms | verify `jetstream.enabled: true`; check writer perms on `$JS.API.>`. The reconciler retries every cycle, so fix it and wait rather than restarting |
+| Buckets not created | JetStream disabled or no write perms | verify `config.jetstream.enabled: true` in the Helm values — it is nested under `config`, and a top-level `jetstream` is silently ignored; check writer perms on `$JS.API.>`. The reconciler retries every cycle, so fix it and wait rather than restarting |
 | Consumer sees no values | wrong `EnvironmentID` / subject perms too narrow | confirm the ids against `GET /inventory`; check the consumer's subjects against §4 — a per-service credential that is one id off subscribes to nothing and reports no error |
 | Every API call returns 401 | no token, or a token the deployment does not know | reads need one too; check `ADMIN_TOKEN`/`ADMIN_TOKENS` and that the client sends `Authorization: Bearer …` |
 | A read returns 404 for a row that exists | the token is not scoped to that environment | out-of-scope reads answer `404` by design; widen the scope or use a token that covers it |

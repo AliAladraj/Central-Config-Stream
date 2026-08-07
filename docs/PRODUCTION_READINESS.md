@@ -5,7 +5,7 @@ each gap would cost you in production.
 **Scope:** three config domains — **feature flags**, **appsettings**, and
 **localization** — plus the JetStream KV distribution layer that carries them to
 consumers.
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-07
 
 ---
 
@@ -18,10 +18,13 @@ run a real embedded JetStream server.
 
 The gap that led this document for the project's whole life — the production
 storage path being compile-verified only — is **closed**. The PostgreSQL
-repositories and the audit store now run against a live server on every CI run
-(§3.1, §3.6). What replaces it is smaller and honest: that coverage stops at the
-repository layer, and **PostgreSQL is newly adopted here — no deployment has yet
-run this schema in anger.** An integration suite is evidence, not production.
+repositories and the audit store now run against a live server on every CI run,
+and so does one end-to-end slice of the service above them (§3.1, §3.6). What
+replaces it is smaller and honest: that coverage stops just above the repository
+layer, and **PostgreSQL is newly adopted here — no deployment has yet run this
+schema in anger.** An integration suite is evidence, not production. The one
+Postgres-only defect found so far was found by adding that slice, not by
+reading the code, which is the argument for widening it.
 
 The rest, in the order it would hurt you: there is **no migration runner**, so
 applying `migrations/` is yours to do and to track (§3.4); the schema is
@@ -46,13 +49,25 @@ the fix is.
 | Appsettings | `internal/microconfig` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
 | Localization | `internal/localization` | CRUD over HTTP, PostgreSQL-backed, KV write-through |
 
-Updates run the same validation and referential checks as creates. That matters
-because an update rewrites the natural key: without those checks a `PUT` could
-point a row at a microservice or environment that does not exist, or collide
-with another row and surface as a `500` instead of a `409`. An update that moves
-a row to a different `(environment, microservice, locale)` also purges the KV
-key it moved away from, so consumers of the old identity stop being served a
-value no row backs.
+**Appsettings and localization updates run the same validation and referential
+checks as creates.** That matters because those updates rewrite the natural key:
+without the checks a `PUT` could point a row at a microservice or environment
+that does not exist, or collide with another row and surface as a `500` instead
+of a `409`. An update that moves a row to a different
+`(environment, microservice, locale)` also purges the KV key it moved away from,
+so consumers of the old identity stop being served a value no row backs.
+
+**Flag values are the exception, and deliberately so.** `PUT /flags/values`
+addresses its row by id and rewrites only `VALUE` and `ENABLED` — it does not
+carry `environmentId` or `flagId`, so it cannot move a row and there is nothing
+referential left to check. It cannot collide either: the unique key it would
+collide on is `(ENVIRONMENT_ID, FLAG_ID)`, and neither column is in the `SET`.
+What it does run is the *input* validation a create runs, which it previously
+did not: a non-empty `value` of at most 4000 characters, counted in runes
+because `VARCHAR(4000)` counts characters, and an `enabled` of exactly `0` or
+`1`. Each of those was a `500` from the driver before, or — for an empty
+`value` — a silent success that published an empty string to every consumer in
+the environment.
 
 ### 2.2 Distribution
 
@@ -99,9 +114,9 @@ value no row backs.
 
 | Area | State |
 |---|---|
-| Auth | Bearer tokens on **every route except `/health`, `/livez` and `/metrics`** — reads as well as writes. Named tokens with per-environment scope (`ADMIN_TOKENS`); a single shared `ADMIN_TOKEN` is also accepted, as a full-scope actor named `shared`. A malformed token configuration is a fatal startup error. Fail-closed when configured, loud warning when not. |
-| Read scoping | A token's scope narrows what it can see, not just what it can write: listings, `/inventory` and `/audit` are filtered to its environments, and an out-of-scope row fetched by id answers `404` rather than `403`. |
-| Rate limiting | Two write buckets, `WRITE_RATE_LIMIT_PER_MINUTE` (default 120/min): address-keyed at the edge ahead of the token check and the audit insert, credential-keyed after it. |
+| Auth | Bearer tokens on **every route except `/health`, `/livez` and `/metrics`** — reads as well as writes. Named tokens with per-environment scope (`ADMIN_TOKENS`); a single shared `ADMIN_TOKEN` is also accepted, as a full-scope actor named `shared`. A malformed token configuration is a fatal startup error, and so is one that is set but yields no token — `" , , "` used to parse to the empty set, which *is* the auth-disabled state, so the process came up unauthenticated announcing that neither variable was set. A blank `ADMIN_TOKENS` stays the documented, loudly-warned development path, because it cannot be told apart from an absent one. Fail-closed when configured, loud warning when not. |
+| Read scoping | A token's scope narrows what it can see, not just what it can write: listings, `/inventory` and `/audit` are filtered to its environments, and an out-of-scope row fetched by id answers `404` rather than `403`. A narrowed listing whose page keeps no rows answers `[]` with `200`, not `500`. |
+| Rate limiting | One bucket map, `WRITE_RATE_LIMIT_PER_MINUTE` (default 120/min) per bucket, over four key namespaces: `ip:<addr>` at the edge for a credentialed write, `anon:<addr>` at the edge for a credential-less one — charged four tokens, so a quarter of the rate, and kept separate so an anonymous flood cannot lock out an authenticated caller sharing a proxy IP — `t:<name>` per credential after authentication, and `inv:t:<name>` metering `GET /inventory`, the one read not bounded by a page in SQL. |
 | TLS | In-process HTTPS with a **TLS 1.3 floor** when `TLS_CERT_FILE` and `TLS_KEY_FILE` are both set; plain HTTP with a startup warning otherwise. `X-Content-Type-Options: nosniff` on every response, HSTS on a real TLS connection. |
 | Audit | Every routed write recorded with actor, method, path, target, status, remote address, and a redacted request body (`CONFIG_AUDIT_LOG`, `GET /audit`, token required). Writes to unrouted paths are not recorded, and not buffered. |
 | Observability | ECS JSON logs; Prometheus `/metrics` covering publish attempts/success/failure/skips, reconcile cycles, keys republished, pruned and prune refusals, HTTP requests and panics, database and NATS reachability. |
@@ -109,7 +124,7 @@ value no row backs.
 | Database | PostgreSQL through `jackc/pgx/v5` over `database/sql`. Connection pool bounded and configurable (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`) — a bound that matters more against Postgres, where every connection is a backend process. Documents are `TEXT` and bind as plain Go strings, deliberately not `jsonb`: `jsonb` re-emits with its own key order, which would defeat the publisher's byte-identical skip and republish every tree to the fleet on every sweep. `UPDATED_AT` is `TIMESTAMPTZ`, so the reconcile window is a plain instant comparison. Unique-constraint violations (SQLSTATE `23505`) mapped to `409` rather than `500`. |
 | Server | Read/read-header/write/idle timeouts set; graceful shutdown waits for the running reconcile cycle, drains NATS, then closes the database. |
 | Packaging | Multi-stage distroless Dockerfile, non-root, one target per binary. k8s manifests and a deploy guide in `deploy/k8s/` and `DEPLOY_JETSTREAM_K8S.md`. |
-| Tests | Keys, reconciler (partial sweeps, prune, prune refusal, mid-sweep writes), flag write-through, auth middleware, read scoping, rate limit, audit store and redaction, liveness, observability, configclient scoping and integration, and an end-to-end stack test running embedded JetStream — all on SQLite. Plus `internal/pgintegration`: 25 tests running the real repositories and the audit store against a live PostgreSQL, each in a schema of its own that the test migrates and seeds itself. |
+| Tests | Keys, reconciler (partial sweeps, prune, prune refusal, mid-sweep writes), flag write-through, auth middleware, read scoping, rate limit, audit store and redaction, liveness, observability, configclient scoping and integration, and an end-to-end stack test running embedded JetStream — all on SQLite. Plus `internal/pgintegration`: 29 tests against a live PostgreSQL, each in a schema of its own that the test migrates and seeds itself. Twenty-five of those drive the real repositories and the audit store; the other four (`app_scope_test.go`) build the whole service through `app.NewApp` and drive token scoping, the row-environment lookup, the audit insert and the empty-page shape over HTTP. |
 
 ### 2.4 A NATS outage no longer stops the service
 
@@ -126,7 +141,7 @@ at `/livez` and only readiness at `/health`.
 
 ## 3. Open gaps
 
-### 3.1 Only the repository layer runs against PostgreSQL
+### 3.1 Nearly everything above the repositories runs against SQLite only
 
 `internal/pgintegration` runs the real repositories and the audit store against
 a live PostgreSQL, each test in a schema of its own that it migrates and seeds
@@ -153,12 +168,26 @@ explicitly, because both fail silently rather than loudly:
   because a timezone-sensitive comparison is wrong in both directions and a
   UTC-only CI runner would go green against one.
 
-**What remains open is the boundary of that coverage.** The suite reaches the
-repositories and the audit store and stops there. `internal/app`'s end-to-end
-and handler tests — routing, token scoping, the write-through publish, the
-reconciler driving real sources — still run on SQLite alone. So the SQL is
-exercised against the real backend; the wiring above it is exercised against the
-mirror schema.
+**One thin slice above the repositories is now covered too, and it is worth
+saying why that slice and not another.** `app_scope_test.go` builds the whole
+service through `app.NewApp` over a real PostgreSQL and drives token scoping,
+the row-environment lookup, the audit insert and the empty-page shape through
+HTTP. It exists because the security middleware picks its bind placeholder from
+the same `DBDriver` flag every `internal/app` test hard-codes to `"sqlite"`, so
+the branch a deployment actually runs was reachable from no test at all — and
+what was sitting in it was `:1`, a placeholder shape PostgreSQL rejects outright
+with SQLSTATE `42601`. The lookup reported failure, the guard treats an
+undeterminable environment as global, and **every scoped token was refused every
+row-addressed write, in every environment including the ones its scope names**,
+while the audit row for the refusal recorded a `NULL` environment. A green
+SQLite suite said nothing about it, and neither did the caller: the answer is a
+`403` that reads like a scope somebody configured wrong.
+
+**What remains open is the rest of that boundary.** Everything else in
+`internal/app` — routing, the write-through publish, the reconciler driving real
+sources — still runs on SQLite alone. So the SQL is exercised against the real
+backend, the scope decision now is too, and the rest of the wiring above the
+repositories is still exercised against the mirror schema.
 
 And the coverage is not deployment experience. No production instance has yet
 carried this schema, and the first one to do so will find whatever an
@@ -170,10 +199,16 @@ counts.
 suite does not stage, still reaches a real deployment first. For the reconciler
 that is the expensive direction, because a failure there is silent —
 `ListAllForReconcile` returning nothing wrong-looking means drift rather than a
-failed request.
-**Fix:** run `internal/app`'s stack test against Postgres too — a larger job than
-it sounds, because those tests hard-code `DBDriver: "sqlite"` and open the
-database themselves rather than taking one they are handed.
+failed request. The `:1` above is the standing evidence for how expensive this
+gap is: it was a one-character defect in the production driver's branch — `$1`
+is what pgx wants — it
+disabled a documented security feature outright, and nothing in the repository
+could see it.
+**Fix:** extend `app_scope_test.go`'s approach to the rest of `internal/app`'s
+stack test — a larger job than it sounds, because those tests hard-code
+`DBDriver: "sqlite"` and open the database themselves rather than taking one
+they are handed. `App.Handler()` and `App.Close()` exist to make that possible
+from outside the package.
 Until then, treat the first real deployment as the remaining test, and watch
 `centralconfig_reconcile_last_success_timestamp_seconds` while you do it.
 
@@ -205,8 +240,9 @@ the control; nothing
 enforces it, so a reviewer has to.
 **Fix if stronger isolation is needed:** per-service, per-environment NATS
 credentials scoped to the key layout, or separate accounts per environment each
-with its own buckets and credentials. [`docs/SECURITY.md`](SECURITY.md) §2 spells
-out the permission model, and
+with its own buckets and credentials.
+[`docs/SECURITY.md`](SECURITY.md#the-account-and-permission-model-that-closes-both)
+spells out the permission model, and
 [`DEPLOY_JETSTREAM_K8S.md`](DEPLOY_JETSTREAM_K8S.md) §4 is where you apply it.
 
 ### 3.4 No migration runner
@@ -275,10 +311,16 @@ suite is run once more verbosely, `--- SKIP` is grepped for, and any skip fails
 the step. That is the difference between "CI covers Postgres" being a fact and
 being a claim, and it costs a few seconds.
 
-**What this does not gate** is anything above the repository layer — see §3.1,
-which is where the residual lives. The workflow still runs no NATS container:
-the messaging tests start an embedded JetStream server in-process, which is
-genuine coverage rather than a substitute for one.
+[`release.yml`](../.github/workflows/release.yml) now stands up the same
+container with the same skip check. Its gate is the run that decides whether a
+version number gets spent, so a gate that could sign off on a tree whose
+production storage path was never executed was the wrong shape — and the two
+workflows were one edit away from disagreeing about what "tested" means.
+
+**What this does not gate** is nearly everything above the repository layer —
+see §3.1, which is where the residual lives. The workflow still runs no NATS
+container: the messaging tests start an embedded JetStream server in-process,
+which is genuine coverage rather than a substitute for one.
 
 ### 3.7 Clock skew in the incremental reconcile
 
@@ -327,14 +369,15 @@ environment.
 - Metrics that report distribution status, not just process liveness.
 - The container image builds and runs non-root.
 - The PostgreSQL repositories and the audit store are exercised against a real
-  server on every CI run, and the migrations are applied — in the order their
-  file numbers give — several dozen times while that happens.
+  server on every CI run — as is token scoping through the whole service — and
+  the migrations are applied, in the order their file numbers give, several
+  dozen times while that happens.
 
 **Yours to add before it carries traffic you care about:**
 
 - A first rollout treated as the last test (§3.1). The SQL is exercised against
   a real PostgreSQL in CI, but no deployment has yet run this schema, and
-  nothing above the repository layer is covered against Postgres at all. Watch
+  almost nothing above the repository layer is covered against Postgres. Watch
   `centralconfig_reconcile_last_success_timestamp_seconds` while you go.
 - A way of applying `migrations/` and recording what you applied (§3.4). The
   file numbers are the apply order, so the directory in lexical order is
@@ -342,8 +385,8 @@ environment.
   habit of changing `migrations/` and `internal/database/sqlite.go` together,
   because a column that diverges between them is still invisible (§3.5).
 - NATS authentication and per-service credentials — see
-  [`docs/SECURITY.md`](SECURITY.md). The
-  shipped compose stack has neither, on purpose.
+  [`docs/SECURITY.md`](SECURITY.md#the-account-and-permission-model-that-closes-both).
+  The shipped compose stack has neither, on purpose.
 - Alert rules for the metrics; `OBSERVABILITY.md` §3 says which are worth having
   and why.
 - A decision on the dual write (§3.2): accept the bounded staleness the

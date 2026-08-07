@@ -55,6 +55,31 @@ before the database is opened and before the listener binds, so a malformed
 protected than the operator believes. The error message carries the entry
 number, never the entry: startup logs are not a place to print secrets.
 
+**A value that is set but yields no token is fatal too**, and that case is worth
+stating on its own because it used to be the quietest failure here. `" , , "` —
+what a Helm value referencing an empty secret renders to — parsed into an empty
+token set, and an empty token set is how "authentication is switched off" is
+represented. The process came up announcing that neither variable was set,
+treated every request as a full-scope caller with no name, and served
+unauthenticated deletes.
+
+The line is drawn after trimming, and it has to be:
+
+* **Blank `ADMIN_TOKENS` is treated as unset.** `ADMIN_TOKENS=` in an env file
+  renders to exactly the same thing as the variable being absent, so it takes
+  the development path below — disabled, with the loud warning — rather than
+  refusing to start.
+* **`ADMIN_TOKENS` holding only separators is fatal.** A value with a comma or a
+  colon in it is not blank; something was rendered into it, which says
+  credentials were meant to be configured.
+* **A whitespace-only `ADMIN_TOKEN` is fatal.** The single-credential form is
+  stricter than the list, because its blank outcome is worse rather than merely
+  equal to unset: it is a live full-scope credential whose secret is a space,
+  with authentication *enabled* and nothing warned about it. Anyone who sends
+  `Authorization: Bearer  ` holds it. A secret is otherwise never trimmed —
+  accepting `" hunter2 "` as `hunter2` would authenticate something the operator
+  did not configure.
+
 A single `ADMIN_TOKEN` is also accepted, and is treated as a full-scope token
 named `shared`. It is the smallest thing that works, which is why the bundled
 console and the compose stack use it — but every change it makes is attributed
@@ -123,7 +148,12 @@ Two consequences are deliberate and worth knowing before you read a response:
 * **A scoped caller can get back fewer than `?limit` rows on a page.** The
   domain handlers page in the database and the narrowing runs after, so pages
   are ragged rather than short-circuited. Keep paging until a page comes back
-  empty; do not treat a short page as the end of the list.
+  empty; do not treat a short page as the end of the list. An empty page is
+  `[]` with a `200` — whether the scope kept none of the rows the database
+  returned, or the database returned none in the first place. Those two arrive
+  differently inside the service (a filtered page against an empty result set,
+  which marshals as `null`) and are deliberately flattened to one shape here, so
+  a narrowed caller has a single thing to test for.
 
 `GET /audit` is narrowed the same way, and there the rule bites in a direction
 worth stating outright: **a row carrying no environment is outside every
@@ -197,35 +227,66 @@ hides.
   caps the body at 1 MiB via `http.MaxBytesReader`. The audit/scope middleware
   buffers the body under the same bound and puts it back, so the cap still
   applies downstream.
-* **Rate limiting** — two token buckets over the write endpoints, standard
-  library only. `WRITE_RATE_LIMIT_PER_MINUTE` (default 120, `0` disables the
-  limiter entirely) sets both the sustained rate and the burst for each of them,
-  and an authenticated write spends one token from each:
+* **Rate limiting** — one token-bucket map, standard library only, with **four
+  key namespaces** over it. `WRITE_RATE_LIMIT_PER_MINUTE` (default 120, `0`
+  disables the limiter entirely) sets both the sustained rate and the burst for
+  every bucket in it. An authenticated write spends one token at the edge and
+  one after authentication:
 
-  * **At the edge, keyed by client address.** This one runs before
-    authentication and before the audit middleware, because at that point
-    nothing about the caller has been checked. Without it, an unauthenticated
-    `POST` to any path buys a body read, a JSON walk and a synchronous database
-    insert — a write primitive with no credential in front of it. It keys on
-    `RemoteAddr` and deliberately not on a forwarded-for header: that header is
-    caller input, and keying on it hands every request that invents a new value
-    a fresh full bucket, which is no limit at all.
+  * **`ip:<address>` — at the edge, for a write that arrives with a credential
+    this deployment configured.** This runs before authentication proper and
+    before the audit middleware, because at that point nothing about the caller
+    has been checked. Without it, an unauthenticated `POST` to any path buys a
+    body read, a JSON walk and a synchronous database insert — a write primitive
+    with no credential in front of it. It keys on `RemoteAddr` and deliberately
+    not on a forwarded-for header: that header is caller input, and keying on it
+    hands every request that invents a new value a fresh full bucket, which is
+    no limit at all.
 
     **Behind a proxy or an ingress, `RemoteAddr` is the proxy.** The edge budget
     is then shared by everything arriving through it, so size
     `WRITE_RATE_LIMIT_PER_MINUTE` for the whole fleet of operators, pipelines
     and consoles that come in that way — not for one of them. Set it to one
     person's comfortable rate and a busy deploy window locks out everybody at
-    once. The separation between callers in that topology comes from the second
-    bucket, not this one.
+    once. The separation between callers in that topology comes from the
+    credential bucket, not this one.
 
-  * **After authentication, keyed by the token name.** This is what stops one
-    operator's script spending another's budget. The key is the configured
-    label rather than the secret, so nothing sensitive ends up in a long-lived
-    map.
+  * **`anon:<address>` — at the edge, for a write that presents no usable
+    credential.** A separate namespace rather than a share of the one above,
+    and that separation is the whole point in the proxy topology: one bucket
+    meant a flood of credential-less writes spent the budget the next
+    authenticated write from the same address needed, so a single anonymous
+    attacker could `429` every operator arriving through the ingress. A
+    credential-less write costs **four tokens** rather than one, so this
+    namespace is a quarter of the rate — far more than the zero legitimate
+    writes such a caller makes, and far too little to matter to the database.
+    The cost is capped at the whole budget, so a deployment tuned down to a
+    handful of writes a minute still admits one rather than refusing every
+    unauthenticated request outright.
+
+    Deciding which of the two to charge means matching the bearer secret at the
+    edge, which is a constant-time compare against a handful of configured
+    tokens — not the body read and insert this gate exists to keep away from
+    unauthenticated callers. The request is still authenticated properly further
+    in.
+
+  * **`t:<name>` — after authentication, keyed by the token name.** This is what
+    stops one operator's script spending another's budget. The key is the
+    configured label rather than the secret, so nothing sensitive ends up in a
+    long-lived map.
+
+  * **`inv:t:<name>` — `GET /inventory`, the one rate-limited read.** Every
+    other read answers from a page bounded in SQL. `/inventory` does not: it
+    reads all three domains whole and pages in Go, so any valid token —
+    including the narrowest — can loop it and force three full table scans plus
+    every document in the estate into memory, per request. Its own namespace
+    means a dashboard polling it cannot spend an operator's write budget, and it
+    caps the *rate* rather than the cost of one call. Closing it properly needs
+    the listers to take a limit, an offset and the caller's scope so the
+    database does the paging. With authentication disabled there is no name to
+    key on and it falls back to the address, `inv:<address>`.
 
   Exhausted callers get `429` with a `Retry-After` header giving whole seconds.
-  Only writes are limited; reads answer from a bounded page and change nothing.
   The bucket map is swept for idle entries once a minute and capped at 8192
   keys, past which new callers share a single overflow bucket — so the
   limiter's memory is bounded by configuration rather than by how many distinct
@@ -276,17 +337,46 @@ reach its port can change configuration for every service watching the fleet.
 
 It is built to be hard to expose by accident, not to be safe when exposed:
 
-* It binds to `127.0.0.1` by default. `PORT` is a bare port number and
-  `BIND_ADDR` supplies the host, so widening it is an explicit act; a value
-  containing a colon is honoured verbatim, which is how the compose stack asks
-  for `:8090`. Binding to anything that is not loopback logs a boxed warning at
-  startup.
+* It binds to `127.0.0.1` by default, and widening it is an explicit act.
+  `BIND_ADDR` supplies the host, and `PORT` is read against it: a bare `8090`
+  and the bare-colon `:8090` both take their host from `BIND_ADDR` — neither
+  form says anything about interfaces, whatever `net.Listen` makes of them — so
+  with `BIND_ADDR` unset both stay on loopback. Only a `PORT` that names a host,
+  `0.0.0.0:8090`, widens the bind on its own, because that is the one spelling
+  that says so out loud; it is what the compose stack sets, where loopback is
+  the container's own and the network namespace is the boundary instead.
+  Binding to anything that is not loopback logs a boxed warning at startup.
+  **The embedded JetStream server (`NATS_EMBEDDED=true`) follows the same
+  variable**, having previously been pinned to `0.0.0.0` regardless: a dev tool
+  started for a laptop demo put an unauthenticated, writable KV on the LAN, and
+  a forged KV entry is indistinguishable to a consumer from a real one. Off
+  loopback it now warns in the same terms as the console port.
+* **It checks the `Host` header against an allowlist, before it looks at
+  `Origin` at all.** Comparing `Origin` against `Host` defends nothing on its
+  own, because a page sets both: `evil.example` resolving to `127.0.0.1` reaches
+  the console with `Host: evil.example` and `Origin: http://evil.example`, they
+  agree, no preflight applies to a JSON `GET` or to a `POST` the page can shape,
+  and the proxy hands over its admin token. That is DNS rebinding, and only
+  `Host` stops it — a browser fills it in from the address it was pointed at, so
+  a rebound page cannot claim to be reaching `localhost` however its name
+  resolves. The allowlist is: loopback always, under every name it has; the
+  address the console is bound to, unless that is a wildcard, which names no
+  host; the hosts in `ALLOWED_ORIGINS`; and `ALLOWED_HOSTS`, which is where any
+  other name is said out loud. Ports are not compared — a rebinding page has to
+  name the console's port to reach it at all, so requiring a match buys nothing.
+  An unrecognised `Host` is `403` before anything else runs, and the refusal
+  does not echo the value back. **`/api/state` and `/api/events` are behind the
+  same guard**, because they hand over the consumer's whole cache and have no
+  `Origin` check of their own. The static files are not: they are the compiled
+  UI, the same bytes anyone can build from this repository.
 * It refuses cross-origin requests. A browser sends `Origin` on every
   cross-origin request and on same-origin writes, so a mismatch is the CSRF
   signal. Absence is allowed — a plain same-origin `GET` omits it, and so does
   `curl` — and one relaxation exists: a loopback page talking to a loopback
-  console, which is what `npm run dev` on `:5173` needs. Bind it anywhere else
-  and the comparison is exact.
+  console, which is what `npm run dev` on `:5173` needs. That relaxation is safe
+  only because the `Host` check has already run: the pages this exists to stop
+  are served from the internet, and none of them can now claim to be on this
+  machine. Bind it anywhere else and the comparison is exact.
 * It forwards `application/json` only. A cross-origin form post can declare
   only urlencoded, multipart or `text/plain`, none of which get through — the
   second half of the CSRF defence, independent of the `Origin` header being
@@ -367,13 +457,35 @@ narrow subjects. KV bucket `X` is stream `KV_X` with subjects `$KV.X.>`.
    ```
    # illustrative user permissions for cart-api (id 2) in environment 3
    permissions: {
-     publish:   { deny: [">"] }
+     publish:   { allow: ["$JS.API.STREAM.INFO.*",
+                          "$JS.API.CONSUMER.CREATE.>",
+                          "$JS.API.DIRECT.GET.>"] }
      subscribe: { allow: ["$KV.FLAGS.3.>",
                           "$KV.MICROCONFIG.3.2",
                           "$KV.LOCALIZATION.3.2.*",
                           "_INBOX.>"] }
    }
    ```
+
+   Two things about that `publish` block are easy to get wrong, and both fail
+   the same way — the consumer connects, the watch never delivers, and nothing
+   reports an error a caller can see.
+
+   * **It is an allow list, not `deny: [">"]`.** A KV watch is not a plain
+     subscription: JetStream's API is request/reply, so a watcher *publishes* to
+     `$JS.API.…` to read the stream's metadata and to create its consumer.
+     Denying every publish subject denies exactly that, and a consumer with
+     `publish: { deny: [">"] }` cannot watch anything. An allow list is already
+     a deny for everything not on it, including the `$KV.*` subjects — which is
+     the property that matters: nothing here may write a bucket.
+   * **`>` rather than `*` on the last two.** `*` matches exactly one token, and
+     what the client sends is
+     `$JS.API.CONSUMER.CREATE.<stream>.<consumer>[.<filter subject>]` and
+     `$JS.API.DIRECT.GET.<stream>.<message subject>` — more than one token after
+     the prefix in both, with the subjects themselves dotted. A `*` there
+     matches none of the real subjects and denies every watch.
+     `$JS.API.STREAM.INFO.*` is correct as written, because a stream name is one
+     token.
 
 4. **Credentials per environment, not per fleet.** A dev consumer credential must
    not carry `3.` subjects. This is the NATS-side mirror of the token scoping the

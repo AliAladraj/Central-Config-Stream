@@ -15,11 +15,14 @@ than a public issue.
 
 ## Supported versions
 
-The supported line is the latest release plus `main`. A `v*` tag cuts a release
-— [`docs/RELEASING.md`](docs/RELEASING.md) is how — and a fix lands on `main`
-and goes out in the next one. There is no backporting to an older tag and no
-security branch, so the remedy is always to move forward rather than to wait
-for a patch on the version you happen to be on.
+**There is no release yet — nothing is tagged, so `main` is the only supported
+line.** Test against `main` and report against a commit on it.
+
+Once a first `v*` tag exists — [`docs/RELEASING.md`](docs/RELEASING.md) is how —
+the supported line becomes the latest release plus `main`, on these terms: a fix
+lands on `main` and goes out in the next release. There is no backporting to an
+older tag and no security branch, so the remedy is always to move forward rather
+than to wait for a patch on the version you happen to be on.
 
 Say which build you tested, because a fix is written against a commit rather
 than against a version number. Both binaries answer `--version` now, from the
@@ -30,12 +33,14 @@ or NATS is dialled — so it works on a machine with neither:
 central-config v0.1.0 (commit 1a2b3c4, built 2026-08-12T09:14:02Z)
 ```
 
-That line is the whole answer. A build with no stamp says
-`dev (commit none, built unknown)` — which is what a laptop `go build` and a
-`go install` both produce, deliberately, rather than pretending to a version —
-and a plain checkout has no binary to ask; in either case give
-`git rev-parse HEAD` instead. [`internal/buildinfo`](internal/buildinfo) is
-where those three values live.
+That line is the whole answer once a release exists. **Until one does, every
+build says `dev (commit none, built unknown)`** — the stamp comes from the
+release pipeline or from `make build`, and neither a laptop `go build` nor a
+`go install` passes `-ldflags`, deliberately, rather than pretending to a
+version. A plain checkout has no binary to ask at all. In any of those cases
+give `git rev-parse HEAD` instead; that is the identifier a fix gets written
+against anyway. [`internal/buildinfo`](internal/buildinfo) is where those three
+values live.
 
 ## Reporting a vulnerability
 
@@ -96,11 +101,12 @@ warning users beats waiting politely.
   development tool and **not a supported deployment target**. It proxies a
   full-scope admin token with no authentication of its own, so anyone who can
   reach its port can change configuration fleet-wide. That is not a
-  vulnerability; it is what the tool is. It binds to loopback, checks `Origin`
-  and forwards only JSON to an allowlisted set of paths precisely because it is
-  never meant to be exposed — see [`docs/SECURITY.md`](docs/SECURITY.md). A way
-  to defeat *those* defences from a page in another tab, on a console bound to
-  loopback as intended, is in scope and worth reporting.
+  vulnerability; it is what the tool is. It binds to loopback, refuses a `Host`
+  it was not configured to answer to, checks `Origin` and forwards only JSON to
+  an allowlisted set of paths precisely because it is never meant to be exposed
+  — see [`docs/SECURITY.md`](docs/SECURITY.md). A way to defeat *those* defences
+  from a page in another tab, on a console bound to loopback as intended, is in
+  scope and worth reporting.
 - **The compose stack (`deploy/compose/`).** It runs NATS with no
   authentication, a shared dev token and plain HTTP, all on purpose and all
   documented. It demonstrates the data path; it is not a manifest shape to

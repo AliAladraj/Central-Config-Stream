@@ -69,7 +69,19 @@ servers:
       There is no canonical host: the service binds whatever `PORT` says and is
       reached wherever the deployment puts it. The defaults below are the local
       stack from `deploy/compose/docker-compose.yml`, whose admin token is
-      `local-dev-token` and whose seeded data lives in environment 1 (`dev`).
+      `local-dev-token`. Its seeded data lives mostly in environment 1 (`dev`),
+      with one flag value in environment 3 (`prod`) and nothing at all in
+      environment 2 (`staging`) — which is why the create examples below aim at
+      environment 2.
+
+      **Timestamps differ by backend.** `UPDATED_AT` is `TIMESTAMPTZ`, so a
+      PostgreSQL deployment returns microseconds with the trailing zeros of the
+      fraction trimmed: `2026-08-05T23:29:01.482913Z`, but also `…:01.48Z`, and
+      `…:01Z` for a value that landed exactly on a second. The compose stack runs
+      SQLite, whose timestamps are whole seconds — which is what makes the
+      examples here look tidier than production output. Parse RFC 3339 rather
+      than a fixed layout, and see `expectedUpdatedAt` for why the difference is
+      load-bearing.
 
       `scheme` is `http` unless `TLS_CERT_FILE` and `TLS_KEY_FILE` are both set —
       with them the server floor is TLS 1.3 and responses carry HSTS; without
@@ -195,23 +207,48 @@ paths:
       operationId: getMetrics
       summary: Prometheus exposition
       description: |-
-        Publish success and failure counts, reconcile drift, database ping
-        failures and HTTP request counters, in the Prometheus text format. Open
-        like the probes: it carries counters, not configuration values. The HTTP
-        label is the route pattern the mux matched, so the label set is bounded by
-        the routing table rather than by whatever paths get probed.
+        Publish attempts, successes, failures and skips; reconcile cycles,
+        duration, keys republished and pruned, prune refusals and last success
+        timestamp; HTTP requests, duration and panics; and database and NATS
+        reachability — in the Prometheus text format. Open like the probes: it
+        carries counters, not configuration values.
+
+        **Every metric is prefixed `centralconfig_`.** The full list and what to
+        alert on is in `docs/OBSERVABILITY.md`. The HTTP `route` label is the
+        route pattern the mux matched, so the label set is bounded by the routing
+        table rather than by whatever paths get probed; an unmatched path is
+        `other`, and so is an unrecognised method, on its own label.
       security: []
       responses:
         '200':
-          description: The current counter and gauge values.
+          description: |-
+            The current counter and gauge values. Abridged below — a real
+            response carries all eighteen metrics, and a counter with no series
+            yet emits its `HELP` and `TYPE` lines and nothing else.
           content:
             text/plain:
               schema:
                 type: string
               example: |
-                # HELP config_publish_total Config values published to KV.
-                # TYPE config_publish_total counter
-                config_publish_total 42
+                # HELP centralconfig_nats_up 1 when the KV buckets are provisioned and NATS is connected, 0 otherwise.
+                # TYPE centralconfig_nats_up gauge
+                centralconfig_nats_up 1
+                # HELP centralconfig_kv_publish_success_total KV publishes that reached JetStream, by bucket.
+                # TYPE centralconfig_kv_publish_success_total counter
+                centralconfig_kv_publish_success_total{bucket="FLAGS"} 41
+                # HELP centralconfig_kv_publish_failures_total KV publishes that failed and were left to the reconciler, by bucket.
+                # TYPE centralconfig_kv_publish_failures_total counter
+                centralconfig_kv_publish_failures_total{bucket="FLAGS"} 1
+                # HELP centralconfig_reconcile_last_success_timestamp_seconds Unix time of the last reconcile cycle in which every source succeeded.
+                # TYPE centralconfig_reconcile_last_success_timestamp_seconds gauge
+                centralconfig_reconcile_last_success_timestamp_seconds 1770335341
+                # HELP centralconfig_http_requests_total HTTP requests, by method, matched route and status code.
+                # TYPE centralconfig_http_requests_total counter
+                centralconfig_http_requests_total{method="PUT",route="PUT /flags/values",status="200"} 3
+                centralconfig_http_requests_total{method="other",route="other",status="404"} 17
+                # HELP centralconfig_db_up 1 when the last health-check ping succeeded, 0 otherwise.
+                # TYPE centralconfig_db_up gauge
+                centralconfig_db_up 1
 
   /inventory:
     get:
@@ -227,7 +264,15 @@ paths:
 
         A scoped token sees only its own environments, and the page is counted
         over the rows it is allowed to see rather than over gaps left by
-        another's.
+        another's — so unlike the domain listings, a scoped page here is full
+        whenever enough in-scope rows remain.
+
+        **This is the only rate-limited read.** Because `limit` bounds the
+        response and not the read, every call scans all three tables whole
+        whatever page it was asked for, so the route draws on a budget of its
+        own — keyed per credential, in a namespace separate from the write
+        budget, so polling this cannot lock an operator out of a flag flip. It
+        answers `429` with `Retry-After` like a write.
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
@@ -242,6 +287,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/ServerError'
 
@@ -358,7 +405,7 @@ paths:
             schema:
               $ref: '#/components/schemas/Environment'
             example:
-              name: staging
+              name: qa
       responses:
         '201':
           description: The stored row, read back by its natural key.
@@ -452,7 +499,7 @@ paths:
             schema:
               $ref: '#/components/schemas/Microservice'
             example:
-              name: catalog-api
+              name: checkout-api
       responses:
         '201':
           description: The stored row, read back by its natural key.
@@ -660,13 +707,13 @@ paths:
             schema:
               $ref: '#/components/schemas/MicroserviceAppSettings'
             example:
-              id: 203
+              id: 201
               microserviceId: 2
-              environmentId: 2
+              environmentId: 1
               settingsJson:
                 http:
                   timeoutMs: 2000
-              expectedUpdatedAt: '2026-08-05T23:27:56Z'
+              expectedUpdatedAt: '2026-08-05T23:27:56.194028Z'
       responses:
         '200':
           description: The stored row as it is after the write.
@@ -794,7 +841,7 @@ paths:
             schema:
               $ref: '#/components/schemas/Flag'
             example:
-              flagKey: search_v2
+              flagKey: checkout_v2
               isActive: 1
       responses:
         '201':
@@ -907,7 +954,7 @@ paths:
                   flagKey: search_v2
                   value: 'on'
                   enabled: 1
-                  updatedAt: '2026-08-05T23:27:56Z'
+                  updatedAt: '2026-08-05T23:27:56.194028Z'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -919,10 +966,17 @@ paths:
       operationId: createFlagValue
       summary: Create a flag value
       description: |-
-        `flagId` and `environmentId` are required; `value` and `enabled` default to
-        the empty string and `0` if omitted. Both parents are checked before the
-        insert, in the application rather than by the foreign key, so "no such
-        environment" comes back as a 404 instead of an opaque constraint failure.
+        `flagId`, `environmentId` and `value` are required. `value` must be
+        non-empty and at most 4000 characters — runes, not bytes, because the
+        `VARCHAR(4000)` column counts characters — and `enabled` defaults to `0`
+        if omitted but must be exactly `0` or `1` when present. Each of those is
+        a **400**; before the checks existed they were driver errors mapped to
+        500, except the empty value, which succeeded and published an empty
+        string to every consumer in the environment.
+
+        Both parents are checked before the insert, in the application rather
+        than by the foreign key, so "no such environment" comes back as a 404
+        instead of an opaque constraint failure.
 
         The body's `environmentId` is authoritative for the scope check here: it is
         what gets inserted.
@@ -933,7 +987,7 @@ paths:
             schema:
               $ref: '#/components/schemas/FlagValue'
             example:
-              environmentId: 1
+              environmentId: 2
               flagId: 8
               value: 'off'
               enabled: 0
@@ -969,6 +1023,15 @@ paths:
         `environmentId` and `flagId` in the body are ignored — the row's real
         environment is read from the database for the scope check.
 
+        `value` and `enabled` are validated exactly as on a create: `value`
+        non-empty and at most 4000 characters, `enabled` exactly `0` or `1`, both
+        **400**. Because the update rewrites only those two columns and moves
+        nothing, there are no *referential* checks to run here and no unique key
+        it can collide on — unlike the appsettings and localization updates,
+        which rewrite their natural key and do run the full create-time checks.
+        Note that `value` is required on an update too: sending only
+        `{"id": …, "enabled": 1}` sets it to the empty string and is refused.
+
         The write goes to the database first and is then pushed to KV as
         `{"enabled": <bool>, "value": "...", "updatedAt": "..."}`. That boolean is
         where the int/bool conversion happens, exactly once, as `enabled != 0`.
@@ -999,7 +1062,7 @@ paths:
                 flagId: 8
                 value: 'on'
                 enabled: 1
-                updatedAt: '2026-08-05T23:29:01Z'
+                updatedAt: '2026-08-05T23:29:01.482913Z'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1021,10 +1084,14 @@ paths:
       operationId: getFlagValue
       summary: Get one flag value
       description: |-
-        `{id}` is the flag-value row id, not the flag key and not the flag id.
-        There is no "list flag values for environment X" route keyed the way a
-        consumer thinks, which is why an HTTP cold-start fallback has to be handed
-        these row ids by hand.
+        `{id}` is the flag-value row id, not the flag key and not the flag id,
+        and unlike the listing this response carries no `flagKey`. A consumer
+        that knows a flag by its key and not by a row id should use
+        `GET /flags/values?environmentId=` instead — one request, keyed the way a
+        consumer thinks, with `flagKey` on every row. `configclient`'s HTTP
+        cold-start fallback uses *this* route and therefore has to be handed the
+        row ids by hand; that is a limitation of the shipped client rather than
+        of the API.
       parameters:
         - $ref: '#/components/parameters/RowId'
       responses:
@@ -1190,9 +1257,9 @@ paths:
             schema:
               $ref: '#/components/schemas/Localization'
             example:
-              id: 302
+              id: 300
               microserviceId: 1
-              environmentId: 2
+              environmentId: 1
               locale: en-US
               bundleJson:
                 catalog.title: Catalogue
@@ -1354,8 +1421,21 @@ components:
         clamped to 500 rather than to the default** — a caller asking for too much
         still wants rows back. A negative or non-numeric value is a 400.
 
-        A scoped token's page is filtered after the database has paged, so it may
-        hold fewer rows than this without the collection being exhausted.
+        **Where the page is taken differs by route**, and it decides whether a
+        short page means the collection is exhausted:
+
+        - `/flags/values`, `/configs/values`, `/localization` and `/environments`
+          page in SQL and are then narrowed to the caller's scope on the way out,
+          so a scoped token's page can hold fewer rows than this without the
+          collection being exhausted. Page until you get back `[]`.
+        - `/audit` is narrowed **in SQL**, in the same statement that pages it, so
+          a short page there really is the end of the trail.
+        - `/inventory` takes no page in SQL at all: the queries return every row
+          and the handler pages in Go over the rows the token may see — so a
+          scoped page is full whenever enough in-scope rows remain. It is also
+          why that one route is rate limited.
+        - `/microservices` and `/flags` page in SQL and are not narrowed at all;
+          their rows belong to no environment.
       schema:
         type: integer
         format: int32
@@ -1386,11 +1466,17 @@ components:
         id to an environment, so it fails closed and treats the request as
         reaching every one: a scoped token gets **403** where a full-scope token
         would have got the 400.
+
+        This parameter is shared by seven routes over five tables, so the example
+        below cannot be right for all of them — ids are per table. Against the
+        seeded compose stack: environments and microservices are `1`–`3`, flags
+        are `7`–`9`, flag values `100`–`103`, appsettings `200`–`202` and
+        localization `300`–`301`. `GET /inventory` is the general answer.
       schema:
         type: integer
         format: int64
         minimum: 1
-      example: 101
+      example: 1
 
   responses:
     Deleted:
@@ -1516,19 +1602,31 @@ components:
                 error: environment still has flag, appsettings or localization rows
     RateLimited:
       description: |-
-        The caller's write budget is spent. Writes are limited twice: once at the
-        edge by client address, before anything about the caller has been checked,
-        and again per credential once the token is known. `Retry-After` carries the
-        whole seconds until the bucket refills.
+        The caller's budget is spent. `Retry-After` carries the whole seconds
+        until the bucket refills.
 
-        `WRITE_RATE_LIMIT_PER_MINUTE` (default 120) sets both, and a non-positive
-        value disables the limiter entirely — it is a safety net, not something that
-        should be able to lock an operator out of production by misconfiguration.
-        Behind a proxy the address-keyed budget is the fleet's shared edge budget
-        rather than one operator's, since the peer address is the same for
-        everything arriving through it; the per-credential budget is what separates
-        operators. Reads are not limited at all: they answer from a bounded page and
-        change nothing.
+        A write is charged twice: once at the edge by client address, before
+        anything about the caller has been checked, and again per credential once
+        the token is known. The edge charge goes to one of two separate
+        namespaces depending on whether the request arrived with a credential
+        this deployment configured. A **credential-less** write is charged four
+        tokens against its own bucket — a quarter of the rate — so that a flood
+        of them cannot spend the budget an authenticated caller at the same
+        address is about to need, which behind an ingress means every operator at
+        once.
+
+        `WRITE_RATE_LIMIT_PER_MINUTE` (default 120) is the ceiling for each
+        bucket, and a non-positive value disables the limiter entirely — it is a
+        safety net, not something that should be able to lock an operator out of
+        production by misconfiguration. Behind a proxy the address-keyed budget
+        is the fleet's shared edge budget rather than one operator's, since the
+        peer address is the same for everything arriving through it; the
+        per-credential budget is what separates operators.
+
+        **Reads are unmetered with one exception.** `GET /inventory` takes no
+        page in SQL — it reads all three domains whole and pages in Go — so it
+        draws on a budget of its own, keyed per credential in a namespace
+        separate from the write budget, and can answer 429 like a write.
       headers:
         Retry-After:
           description: Whole seconds to wait before the next write will be accepted.
@@ -1622,7 +1720,7 @@ components:
       example:
         id: 1
         name: dev
-        updatedAt: '2026-08-05T23:27:56Z'
+        updatedAt: '2026-08-05T23:27:56.194028Z'
 
     Microservice:
       type: object
@@ -1646,7 +1744,7 @@ components:
       example:
         id: 1
         name: catalog-api
-        updatedAt: '2026-08-05T23:27:56Z'
+        updatedAt: '2026-08-05T23:27:56.194028Z'
 
     Flag:
       type: object
@@ -1669,8 +1767,10 @@ components:
           format: int64
           description: |-
             An integer, mirroring the column, on the same terms as `enabled` on a
-            flag value. Stored as sent and read back; nothing in the write or
-            publish path branches on it today.
+            flag value. **Only `0` and `1` are accepted** — anything else is a
+            400, even though the `SMALLINT` column would take it, because only
+            those two mean anything. Nothing in the write or publish path
+            branches on it today.
 
             Omit it from a create and it is bound as `0`, **not** the column's
             `DEFAULT 1` — the insert always binds the decoded field, so the Go
@@ -1683,7 +1783,7 @@ components:
         id: 7
         flagKey: search_v2
         isActive: 1
-        updatedAt: '2026-08-05T23:27:56Z'
+        updatedAt: '2026-08-05T23:27:56.194028Z'
 
     FlagValue:
       type: object
@@ -1715,18 +1815,32 @@ components:
           description: Required on create, ignored on update.
         value:
           type: string
+          maxLength: 4000
           description: |-
             Free-form, and published to KV verbatim. Used for things a boolean
             cannot carry — a rollout percentage, a variant name. Parse it in the
             consumer.
+
+            **Required, non-empty, and at most 4000 characters** — counted in
+            runes, because `VARCHAR(4000)` counts characters and a value of 4000
+            accented ones fits the column. Both bounds are 400s. An empty string
+            is refused rather than stored because it reaches every consumer in
+            the environment looking indistinguishable from a parse bug, so a
+            caller who means "no value" has to write a real placeholder.
         enabled:
           type: integer
           format: int64
           description: |-
             **An integer here and a boolean in KV.** The API mirrors the
             `SMALLINT` column; KV mirrors what a consumer wants to branch on.
-            The conversion is `enabled != 0`, done once on the publish path, so any
-            non-zero value is on.
+            The conversion is `enabled != 0`, done once on the publish path.
+
+            **Only `0` and `1` are accepted on the way in**, a 400 otherwise. The
+            column would take any `SMALLINT`, but the conversion collapses
+            everything non-zero to `true`, so a stored `7` would be a row this
+            API reads back as `7` while every consumer sees the same `true` a `1`
+            gives them. A row written before this check existed still reads back
+            as whatever it holds.
 
             A tool that reads a flag value from this API and writes it back
             unchanged is fine. A tool that reads `{"enabled": true}` from KV and
@@ -1746,6 +1860,16 @@ components:
             request answers **409** and changes nothing. Omit it and the original
             last-write-wins behaviour stands.
 
+            **Echo the value back exactly as you read it, fraction included.** It
+            is parsed as RFC 3339 and compared as an *instant* by the database —
+            at microsecond resolution on PostgreSQL, so a value rounded to the
+            second no longer matches the row it came from and the write answers
+            409 as a lost race rather than as anything naming the real problem. A
+            value that is not RFC 3339 at all fails the body decode and answers
+            400. The SQLite stack compares whole-second text and is forgiving
+            about this, which is exactly why the mistake survives the compose
+            stack and shows up against a deployment.
+
             It never appears in a response — the row is read back from the database,
             which has no such column.
       example:
@@ -1754,7 +1878,7 @@ components:
         flagId: 8
         value: 'on'
         enabled: 1
-        updatedAt: '2026-08-05T23:29:01Z'
+        updatedAt: '2026-08-05T23:29:01.482913Z'
 
     FlagValueRow:
       type: object
@@ -1848,13 +1972,13 @@ components:
             `FlagValue.expectedUpdatedAt`: a mismatch answers 409 and changes
             nothing.
       example:
-        id: 203
+        id: 201
         microserviceId: 2
-        environmentId: 2
+        environmentId: 1
         settingsJson:
           http:
             timeoutMs: 1500
-        updatedAt: '2026-08-05T23:27:56Z'
+        updatedAt: '2026-08-05T23:27:56.194028Z'
 
     Localization:
       type: object
@@ -1911,13 +2035,13 @@ components:
             `FlagValue.expectedUpdatedAt`: a mismatch answers 409 and changes
             nothing.
       example:
-        id: 302
+        id: 300
         microserviceId: 1
-        environmentId: 2
+        environmentId: 1
         locale: en-US
         bundleJson:
           catalog.title: Catalog
-        updatedAt: '2026-08-05T23:27:56Z'
+        updatedAt: '2026-08-05T23:27:56.194028Z'
 
     Inventory:
       type: object
@@ -2066,7 +2190,7 @@ components:
       required: [id, occurredAt, actor, method, path, statusCode]
       example:
         id: 918
-        occurredAt: '2026-08-05T23:29:01Z'
+        occurredAt: '2026-08-05T23:29:01.482913Z'
         actor: ci-dev
         method: PUT
         path: /flags/values

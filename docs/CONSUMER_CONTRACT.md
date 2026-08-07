@@ -235,9 +235,9 @@ than being retried — it is not the kind of failure that gets better while the
 process runs. A single endpoint being unwell should not; a partial cold start is
 better than none. `configclient` splits it exactly that way.
 
-Which endpoints a bootstrap can actually use is limited by their keys. KV is
-keyed the way a consumer thinks — flag key, microservice, locale — but two of
-the three read endpoints are keyed by database row id:
+Which endpoints a bootstrap can use is a question about their keys. KV is keyed
+the way a consumer thinks — flag key, microservice, locale — and the
+fetch-by-id endpoints are not:
 
 ```
 GET /localization/lookup/{msId}/{envId}/{locale}   reachable from what you know
@@ -245,10 +245,25 @@ GET /configs/values/{id}    {id} is the appsettings row id, not the service id
 GET /flags/values/{id}      {id} is the flag-value row id, not the flag key
 ```
 
-So a consumer that wants to hydrate flags or appsettings has to be told those
-row ids as deployment configuration — `GET /inventory` is where an operator
-finds them. There is no "list flag values for environment X" endpoint, so there
-is no way around it on the client side.
+`configclient`'s fallback uses exactly those three, which is why it has to be
+handed the row ids as deployment configuration — `GET /inventory` is where an
+operator finds them.
+
+**If you are writing your own client, do not copy that.** The listing routes are
+keyed the way you already think and answer in one request:
+
+```
+GET /flags/values?environmentId={envId}      every flag value in the environment,
+                                             each row carrying its flagKey
+GET /configs/values?microserviceId={msId}&environmentId={envId}
+GET /localization?microserviceId={msId}&environmentId={envId}
+```
+
+All three are paged (`?limit`, default 100, max 500, `&offset`) and narrowed to
+your token's scope, so page until you get back `[]`. The flags listing in
+particular removes the whole row-id problem for a cold start: the environment is
+something the consumer was configured with anyway. That `configclient` does not
+use it yet is a limitation of the shipped client, not of the control plane.
 
 ## 5. Secrets — the `env:VAR_NAME` convention
 

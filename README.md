@@ -121,36 +121,41 @@ needs no Docker at all.
 
 ### Install
 
-A `v*` tag publishes a container image and cross-compiled binaries; three ways
-to get the same service:
+**Nothing is tagged yet.** There are no releases and no published image, so the
+source paths below are the only ones that work today — a `ghcr.io` pull or a
+release-page download 404s, and will keep doing so until the first `v*` tag is
+cut:
 
 ```bash
-# the image — linux/amd64, distroless, non-root
-docker run --rm ghcr.io/erasedkyte/central-config:latest --version
-
-# a binary — pick your platform from the release page and verify it against
-# checksums.txt: https://github.com/ErasedKyte/Central-Config-Stream/releases
-tar xzf central-config_0.1.0_linux_amd64.tar.gz && ./central-config --version
-
 # from source — the module path carries the repository name, the binary does not
 go install github.com/ErasedKyte/Central-Config-Stream/cmd/central-config@latest
+
+# or from a checkout
+go build ./cmd/central-config && ./central-config --version
 ```
 
-The first two report a real version, because the release pipeline stamps it in.
-`go install` does not pass `-ldflags`, so a binary installed that way honestly
-says `dev (commit none, built unknown)` — use it for a quick look, not for
-telling two deployments apart.
+Either way the binary honestly says `dev (commit none, built unknown)`: neither
+`go install` nor a plain `go build` passes `-ldflags`, so nothing is stamped in.
+Use it for a quick look, not for telling two deployments apart — `make build`
+stamps the real values.
 
-**The image is the service alone; it serves no browser UI.** The console is a
-separate binary, and its React bundle is not in the archives — `web/` is
+Once the first tag exists, [`.github/workflows/release.yml`](.github/workflows/release.yml)
+publishes a distroless, non-root linux/amd64 image to
+`ghcr.io/erasedkyte/central-config` and cross-compiled `.tar.gz` binaries with a
+`checksums.txt` to the releases page, both stamped with a real version, because
+the pipeline passes the `-ldflags` a laptop build does not.
+[`docs/RELEASING.md`](docs/RELEASING.md) is the other side of this: how a tag is
+cut and how to check one landed.
+
+**That image will be the service alone; it serves no browser UI.** The console
+is a separate binary, and its React bundle is not in the archives — `web/` is
 gitignored and building it needs Node — so an unpacked `testconsole` answers
 `/api/state` and `/api/events` but tells the browser the UI has not been built.
 Getting the console *with* its UI means the compose stack above, which builds
 the bundle in a Node stage, or `cd webui && npm ci && npm run build` beside the
-binary. [`docs/RELEASING.md`](docs/RELEASING.md) is the other side of this: how
-a release is cut and how to check one landed.
+binary.
 
-Building from source:
+The whole repository, console included:
 
 ```bash
 go build ./... && go vet ./... && go test ./...
@@ -188,12 +193,27 @@ the API alone cannot:
 ![The Flags view: an environment × flag matrix with dev, staging and prod across the top, a filled cell wherever a flag value row exists and an add button where none does, beside the consumer's cached FLAGS, MICROCONFIG and LOCALIZATION values.](docs/assets/console-flags-matrix.png)
 
 The console proxies its admin calls so the browser never holds the token. It
-binds to `127.0.0.1` by default — reaching it from another machine needs
-`BIND_ADDR=0.0.0.0`, and it warns loudly when it is not on loopback, because it
-attaches a full-scope admin token to everything it forwards. It checks `Origin`,
-forwards only `application/json` to a named list of API paths, and — when
-`web/` has not been built — serves a page telling you to build it instead of a
-bare 404.
+binds to `127.0.0.1` by default, and it warns loudly when it is not on loopback,
+because it attaches a full-scope admin token to everything it forwards. `PORT`
+is read against `BIND_ADDR`: both `8090` and `:8090` bind loopback with
+`BIND_ADDR` unset, and only a `PORT` that names a host — `0.0.0.0:8090`, which
+is what the compose stack sets so its published port is reachable — widens the
+bind on its own. The embedded NATS server follows the same variable.
+
+It then checks the `Host` header against an allowlist *before* it looks at
+`Origin`, because `Origin`-versus-`Host` alone is defeated by DNS rebinding: a
+page on `evil.example` whose DNS answer is `127.0.0.1` sets both to itself and
+they agree. Only `Host` gives it away, since a browser fills that in from the
+address it was pointed at. Loopback is always accepted under all of its names;
+so is the address the console is bound to, unless that is a wildcard, which
+names no host. `ALLOWED_HOSTS` is where any other name is said out loud — so
+reaching the console from another machine needs both a wider bind *and* that
+name listed, or it answers 403. `/api/state` and `/api/events` are behind the
+same guard, because they hand over the consumer's whole cache.
+
+Beyond that it forwards only `application/json` to a named list of API paths,
+and — when `web/` has not been built — serves a page telling you to build it
+instead of a bare 404.
 
 ## How it works
 
@@ -275,9 +295,16 @@ bearer token.** Reads used to be anonymous; they are not any more, because a
 single unauthenticated GET was enough to walk off with every appsettings tree
 and bundle in the estate.
 
-Writes are additionally rate-limited per caller (`WRITE_RATE_LIMIT_PER_MINUTE`,
-default 120) and recorded in an audit log with the actor, the target and a
-redacted request body.
+Writes are additionally rate-limited (`WRITE_RATE_LIMIT_PER_MINUTE`, default
+120) and recorded in an audit log with the actor, the target and a redacted
+request body. The limiter has three key namespaces: `ip:<ip>` at the edge for a
+write that arrives with a configured credential, `anon:<ip>` at the edge for one
+that does not — charged at four times the rate, so a quarter of the budget, and
+kept separate so a flood of credential-less writes cannot spend what an
+authenticated caller behind the same proxy IP is about to need — and `t:<name>`
+per credential after authentication. `GET /inventory` is metered too, under
+`inv:t:<name>`; it is the only rate-limited read, because it is the only one
+that is not bounded by a page in SQL.
 
 ### Token scope narrows reads as well as writes
 
@@ -303,7 +330,7 @@ GET  /health      readiness: pings the database AND reports NATS; 503 if either 
 GET  /livez       liveness: static, touches no dependency
 GET  /metrics     Prometheus: publish success/failure, reconcile drift, HTTP
 
-GET  /inventory   every editable row with its id — paged, ?limit (default 100, max 500) &offset
+GET  /inventory   every editable row with its id — paged, ?limit (default 100, max 500) &offset; rate-limited
 GET  /audit       the write audit trail — ?actor=&from=&to=&limit=&offset=
 
 GET    /environments                 ?limit=&offset=
@@ -372,6 +399,15 @@ curl -s -X POST http://localhost:8080/localization \
 `settingsJson` and `bundleJson` must be JSON **objects** — a top-level array or
 scalar is well-formed JSON that would break every consumer's deserialization at
 once, so it is refused with 400.
+
+A flag value has its own three rules, applied identically on `POST` and `PUT`:
+`value` must be non-empty and at most **4000 characters** — runes, because the
+`VARCHAR(4000)` column counts characters and not bytes — and `enabled` (like
+`isActive` on a flag definition) must be exactly `0` or `1`. The column would
+take any `SMALLINT`, but only 0 and 1 mean anything, since the KV payload
+collapses everything non-zero to `true`. Each of these used to be a 500 from the
+driver, or — for an empty `value` — a silently published empty string that
+arrives at every consumer in the environment looking like a parse bug.
 
 ### Optimistic concurrency
 
@@ -471,11 +507,12 @@ Beyond the obvious `DB_DRIVER` / `CONN_STRING` / `NATS_URL` / `PUBLISH_ENABLED`:
 | `DB_MAX_OPEN_CONNS` `[20]`, `DB_MAX_IDLE_CONNS` `[5]` | PostgreSQL connections this process may hold. Left unbounded, a slow query plus replicas plus the reconciler can walk a shared instance into `max_connections` — and every Postgres connection is a backend process, so the cost lands on everything else on that instance before the refusals start. Not applied to SQLite, which runs on one connection. |
 | `DB_CONN_MAX_LIFETIME` `[30m]`, `DB_CONN_MAX_IDLE_TIME` `[5m]` | How long a connection lives and how long an idle one is kept. Without a lifetime, a connection survives a failover or a pgbouncer restart as a half-dead socket. |
 | `RECONCILE_PRUNE_MAX_FRACTION` `[0.2]` | The share of a KV bucket one reconcile cycle may delete. A database that came back empty would otherwise have the reconciler purge the whole fleet's configuration. |
-| `WRITE_RATE_LIMIT_PER_MINUTE` `[120]` | Writes per caller per minute; `<= 0` disables it. |
+| `WRITE_RATE_LIMIT_PER_MINUTE` `[120]` | Writes per caller per minute, and the ceiling for each of the limiter's key namespaces above; `<= 0` disables it. |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | Both set ⇒ HTTPS with a TLS 1.3 floor and HSTS. Otherwise plain HTTP with a startup warning. |
 
-Console-only: `BIND_ADDR` `[127.0.0.1]`, `ALLOWED_ORIGINS`, `ENVIRONMENT_ID`
-`[1]`, `CENTRAL_CONFIG_URL`, `NATS_EMBEDDED` `[false]`, `WEB_DIR` `[web]`.
+Console-only: `BIND_ADDR` `[127.0.0.1]`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`,
+`ENVIRONMENT_ID` `[1]`, `CENTRAL_CONFIG_URL`, `NATS_EMBEDDED` `[false]`,
+`WEB_DIR` `[web]`.
 
 `ADMIN_TOKENS` is `NAME:ENV_SCOPE:SECRET`, comma separated. A **name** is
 limited to `[A-Za-z0-9._-]` and 100 characters, and a **secret may not contain a
@@ -483,6 +520,16 @@ comma** — entries are split on commas before they are split on colons, so a
 comma inside a secret silently starts an entry, and possibly a full-scope token,
 of its own. The name check is what catches that at startup rather than in
 production.
+
+A malformed value is a **fatal startup error**, and the line is drawn after
+trimming. `ADMIN_TOKENS=` — which is what an env file renders for an absent
+value — is indistinguishable from the variable being unset, so it takes the
+documented, loudly-warned development path. A value that holds separators but
+yields no entry (`" , , "`, what a Helm value referencing an empty secret
+renders to) is not blank: something was meant to be there, so it stops the
+process rather than quietly disabling authentication. A whitespace-only
+`ADMIN_TOKEN` is fatal for the opposite reason — it is a live full-scope
+credential whose secret is a space, with no warning printed at all.
 
 ## Documentation
 
@@ -524,8 +571,13 @@ the order it applies.
   numbers are the apply order, so `psql -f` over the directory in lexical order
   works — see [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
   §3.4.
-- **Only the repository layer is covered against PostgreSQL.** The end-to-end
-  and handler tests still run on SQLite alone, so the wiring above the
+- **Almost everything above the repositories is covered against SQLite only.**
+  `internal/pgintegration` now drives the whole service over a real PostgreSQL
+  in one file — `app_scope_test.go` builds the app through `app.NewApp` and
+  exercises token scoping, the row-environment lookup and the audit insert
+  through HTTP, because the security middleware has a Postgres branch nothing
+  else executed. That is the exception, not the rule: every other end-to-end and
+  handler test still runs on SQLite, so the rest of the wiring above the
   repositories is verified against the mirror schema rather than the real one.
 - **KV has no per-key ACLs out of the box.** With a single shared credential,
   any consumer holding it can read every environment's keys. The environment
@@ -536,10 +588,13 @@ the order it applies.
 - **TLS is opt-in.** With `TLS_CERT_FILE`/`TLS_KEY_FILE` unset the admin API
   serves plain HTTP and warns at startup, on the assumption that TLS terminates
   at an ingress.
-- **The HTTP cold-start fallback cannot rehydrate flags on its own.** There is
-  no "list flag values for environment X" route, so
-  `HTTPFallback.FlagValueIDs` has to name the row ids by hand. What is left
-  unconfigured is simply not fetched.
+- **The HTTP cold-start fallback fetches flags by row id.**
+  `GET /flags/values?environmentId=` does exist — it is the first thing the
+  quickstart above calls — but `configclient`'s fallback does not use it. It
+  fetches `GET /flags/values/{id}` one row at a time, so
+  `HTTPFallback.FlagValueIDs` has to name the row ids by hand, and what is left
+  unconfigured is simply not fetched. Closing this is a change to
+  `pkg/configclient/httpfallback.go`, not a new server route.
 
 ## Licence
 

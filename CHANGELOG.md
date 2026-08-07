@@ -15,13 +15,13 @@ that only lists wins is a changelog you have to check the code against anyway.
 
 ## [Unreleased]
 
-Nothing yet. 0.1.0 has not been tagged, so everything currently in the
-repository is listed under it.
+## [0.1.0] — unreleased
 
-## [0.1.0] — UNRELEASED — tag pending
+Not yet tagged, so everything currently in the repository is listed under it and
+`## [Unreleased]` above is deliberately empty.
 
-The first release. There is no earlier version to have fixed anything from, so
-there is no **Fixed** section: the hardening that happened during development —
+There is no earlier version to have fixed anything from, so there is no
+**Fixed** section: the hardening that happened during development —
 authenticating reads, making reconciliation fault-tolerant, splitting liveness
 from readiness — is part of what 0.1.0 *is*, not a change to something anyone
 ran. It is described below as the shipped behaviour rather than as a repair.
@@ -30,10 +30,25 @@ ran. It is described below as the shipped behaviour rather than as a repair.
 
 - **Three configuration domains over one admin API.** Feature flags, per-service
   appsettings and localization bundles, each with full CRUD over HTTP and a
-  relational database as the source of truth. Updates run the same validation
-  and referential checks as creates, because an update rewrites the natural key:
-  without them a `PUT` could point a row at an environment that does not exist,
-  or collide with another row and surface as a `500` rather than a `409`.
+  relational database as the source of truth. Appsettings and localization
+  updates run the same validation and referential checks as creates, because
+  those updates rewrite the natural key: without them a `PUT` could point a row
+  at an environment that does not exist, or collide with another row and surface
+  as a `500` rather than a `409`. A flag-value update addresses its row by id and
+  rewrites only the value and the enabled flag, so it has no references to check
+  and cannot collide — but it runs the same *input* validation, which is what
+  matters there.
+
+- **Flag values are validated on the way in.** `value` must be non-empty and at
+  most 4000 characters — runes, because the `VARCHAR(4000)` column counts
+  characters and `len()` would refuse a value of 4000 accented ones the column
+  would take — and `enabled`, like `isActive` on a flag definition, must be
+  exactly `0` or `1`. Only those two mean anything: the KV payload collapses
+  everything non-zero to `true`, so a stored `7` is a row the API reads back as
+  `7` while every consumer sees the same `true` a `1` would have given them.
+  Each of these was a driver error mapped to a `500` before, except the empty
+  value, which succeeded and published an empty string to every consumer in the
+  environment — indistinguishable at the far end from a parse bug.
 
 - **Write-through distribution over NATS JetStream KV.** Every admin write also
   lands in one of three buckets — `FLAGS`, `MICROCONFIG`, `LOCALIZATION` — under
@@ -128,17 +143,22 @@ ran. It is described below as the shipped behaviour rather than as a repair.
   `500`.
 
 - **The production storage path is covered by tests.**
-  `internal/pgintegration` runs the real repositories and the audit store
-  against a live PostgreSQL — 25 tests, each in a fresh schema it creates,
-  migrates from `migrations/*.sql` and seeds itself, so applying the shipped DDL
-  is exercised several dozen times on every run. The reconcile window is pinned
-  on sessions at UTC+14 and UTC−11 as well as UTC, because those are the two
-  signs the timezone bug came in and a UTC-only runner would miss both. Large
-  documents are asserted to round-trip byte-identically, which is what the
-  publish skip depends on. The suite skips cleanly when `TEST_POSTGRES_DSN` is
-  unset, so `go test ./...` stays green without a database; `make test-postgres`
-  starts a throwaway one. What it does not reach is anything above the
-  repository layer — `internal/app` still tests on SQLite alone
+  `internal/pgintegration` runs against a live PostgreSQL — 29 tests, each in a
+  fresh schema it creates, migrates from `migrations/*.sql` and seeds itself, so
+  applying the shipped DDL is exercised several dozen times on every run. The
+  reconcile window is pinned on sessions at UTC+14 and UTC−11 as well as UTC,
+  because those are the two signs the timezone bug came in and a UTC-only runner
+  would miss both. Large documents are asserted to round-trip byte-identically,
+  which is what the publish skip depends on. The suite skips cleanly when
+  `TEST_POSTGRES_DSN` is unset, so `go test ./...` stays green without a
+  database; `make test-postgres` starts a throwaway one.
+
+  Twenty-five of those drive the repositories and the audit store. The other
+  four drive the **whole service** — router, middleware chain, audit store —
+  over the real database, because the scope middleware picks its bind
+  placeholder from the same driver flag every other end-to-end test sets to
+  `sqlite`, so the branch a deployment runs was reachable from no test at all.
+  Everything else above the repositories still tests on SQLite alone
   ([`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.1).
 
 - **A local stack that exercises the whole path on one machine.** A compose
@@ -177,7 +197,10 @@ ran. It is described below as the shipped behaviour rather than as a repair.
   there rather than skipping, and because that suite fails *open* by design, the
   workflow re-runs it verbosely and fails the step if any test skipped. A DSN
   typo would otherwise leave the gate green while testing nothing
-  ([`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.6).
+  ([`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.6). The
+  release workflow's own gate stands up the same container with the same skip
+  check, because that is the run which decides whether a version number gets
+  spent.
 
 - **Documentation for each audience**: a compose walkthrough, a consumer
   contract specified well enough to implement a client in any language, a
@@ -209,18 +232,38 @@ ran. It is described below as the shipped behaviour rather than as a repair.
   elsewhere answer `403`, listings and `GET /inventory` and `GET /audit` return
   only in-scope rows, and **a single row fetched by id from outside the scope
   answers `404`, not `403`** — any other answer would confirm it exists. Audit
-  rows carrying no environment are invisible to a scoped token. A malformed
-  token configuration is a fatal startup error; with no tokens configured at all
-  the service runs unauthenticated and says so loudly, which is a dev-only mode.
+  rows carrying no environment are invisible to a scoped token. A narrowed
+  listing whose page keeps no rows answers `[]` with `200`, so a scoped caller
+  paging to the end of a collection sees an ordinary empty page rather than a
+  server error.
+
+- **A token configuration that authenticates nobody stops the process.** A
+  malformed `ADMIN_TOKENS` was already fatal; a value that is *set* but yields
+  no entry now is too. `" , , "` — what a Helm value referencing an empty secret
+  renders to — parsed to the empty token set, and the empty token set is how
+  "authentication is off" is represented, so the process came up announcing that
+  neither variable was set and served unauthenticated deletes. A whitespace-only
+  `ADMIN_TOKEN` is fatal for the opposite reason: it is a live full-scope
+  credential whose secret is a space. A **blank** `ADMIN_TOKENS` stays the
+  documented development path — it cannot be distinguished from the variable
+  being absent — and still announces itself loudly at startup.
 
 - **`GET /inventory` is paged** (`?limit`, default 100, max 500) rather than
   returning the whole estate in one response.
 
 - **Write rate limiting that cannot be walked around**
-  (`WRITE_RATE_LIMIT_PER_MINUTE`, default 120). Two buckets: address-keyed at
-  the edge, ahead of the token check and the audit insert, and credential-keyed
-  after it. A flood of distinct bearer values therefore neither bypasses the
-  limit nor grows the bucket map without bound.
+  (`WRITE_RATE_LIMIT_PER_MINUTE`, default 120), over four key namespaces:
+  `ip:<addr>` at the edge for a write arriving with a configured credential,
+  `anon:<addr>` at the edge for one arriving without — charged four tokens, so a
+  quarter of the rate, and kept a separate namespace so a flood of
+  credential-less writes cannot spend the budget an authenticated caller behind
+  the same ingress IP is about to need — `t:<name>` per credential after
+  authentication, and `inv:t:<name>` for `GET /inventory`. That last is the only
+  rate-limited read, because it is the only one not bounded by a page in SQL: it
+  reads all three domains whole and pages in Go, so any valid token could
+  otherwise loop it for three full table scans per request. A flood of distinct
+  bearer values neither bypasses the limit nor grows the bucket map without
+  bound.
 
 - **TLS 1.3 as the floor** when `TLS_CERT_FILE` and `TLS_KEY_FILE` are both set
   — nothing in the stack needs 1.2 kept open. `X-Content-Type-Options: nosniff`
@@ -238,9 +281,23 @@ ran. It is described below as the shipped behaviour rather than as a repair.
   into explicitly.
 
 - **The console does not hand the browser a token.** It proxies admin calls,
-  checks `Origin`, forwards only `application/json` to a named list of API
-  paths, and binds to loopback unless told otherwise — it attaches a full-scope
-  admin token to everything it forwards.
+  forwards only `application/json` to a named list of API paths, and binds to
+  loopback unless told otherwise — it attaches a full-scope admin token to
+  everything it forwards. `PORT` is read against `BIND_ADDR` and only a `PORT`
+  naming a host widens the bind, so neither `8090` nor `:8090` reaches beyond
+  the machine on its own; the embedded JetStream server follows the same
+  variable rather than sitting on `0.0.0.0` regardless.
+
+- **The console checks `Host` before it checks `Origin`.** Comparing `Origin`
+  against `Host` defends nothing alone, because a page sets both: `evil.example`
+  resolving to `127.0.0.1` reaches the console with the two agreeing, and no
+  preflight applies to a JSON `GET` or to a `POST` the page can shape. Only
+  `Host` gives DNS rebinding away, since a browser fills it in from the address
+  it was pointed at. The console answers only to loopback, the address it is
+  bound to, and whatever `ALLOWED_ORIGINS` and the new `ALLOWED_HOSTS` name;
+  anything else is `403` before the proxy builds a request. `/api/state` and
+  `/api/events` are behind the same guard, because they hand over the consumer's
+  whole cache.
 
 - **Scheduled scanning, kept out of the contributor gate.** `govulncheck` and
   `npm audit` weekly and on pull requests that move a dependency manifest, and
@@ -261,12 +318,12 @@ Listed here because a first release is exactly where they are easiest to miss;
 [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3 gives each one
 a cost and a fix.
 
-- **PostgreSQL has never run a deployment.** The repositories and the audit
-  store are exercised against a real server on every CI run, which is a great
-  deal more than compilation, but no production instance has yet carried this
-  schema — and the coverage stops at the repository layer, so the end-to-end and
-  handler tests still run on SQLite alone. Treat the first deployment as the
-  remaining test.
+- **PostgreSQL has never run a deployment.** The repositories, the audit store
+  and one end-to-end slice of the service are exercised against a real server on
+  every CI run, which is a great deal more than compilation, but no production
+  instance has yet carried this schema — and the coverage stops just above the
+  repository layer, so the rest of the end-to-end and handler tests still run on
+  SQLite alone. Treat the first deployment as the remaining test.
 - **There is no migration runner.** `migrations/*.sql` is DDL you apply
   yourself. The file numbers *are* the apply order, so the directory in lexical
   order is correct on an empty database, but nothing records what has been
@@ -283,9 +340,14 @@ a cost and a fix.
 - **KV has no per-key access control.** The environment prefix scopes what a
   consumer watches; it is not an authorisation boundary. With a single shared
   NATS credential, any consumer holding it can read every environment.
-- **The HTTP cold-start fallback cannot rehydrate flags on its own.** There is
-  no "list flag values for environment X" route, so `HTTPFallback.FlagValueIDs`
-  has to name the row ids by hand.
+- **The HTTP cold-start fallback fetches flags by row id.**
+  `GET /flags/values?environmentId=` exists, but `configclient`'s fallback does
+  not use it — it fetches `GET /flags/values/{id}` one row at a time, so
+  `HTTPFallback.FlagValueIDs` has to name the row ids by hand. Closing this is a
+  change to `pkg/configclient/httpfallback.go`, not a new server route.
+
+<!-- Neither URL resolves until v0.1.0 is tagged: there is no release and no
+     tag to compare against. Both become live the moment there is. -->
 
 [Unreleased]: https://github.com/ErasedKyte/Central-Config-Stream/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/ErasedKyte/Central-Config-Stream/releases/tag/v0.1.0

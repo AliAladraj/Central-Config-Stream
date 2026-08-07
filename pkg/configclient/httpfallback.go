@@ -26,10 +26,10 @@ import (
 //	GET /flags/values/{id}     — {id} is the flag-value row id, not the flag
 //	    key. Only reachable if the caller supplies FlagValueIDs.
 //
-// There is no "list flag values for environment X" endpoint on the control
-// plane, so a flag fallback that needs no caller-supplied ids is not
-// implementable without a new server endpoint. Configure what you have; what
-// is left unset is simply not fetched.
+// The control plane does list flag values for an environment
+// (GET /flags/values?environmentId=), but this fallback fetches by row id
+// instead, so the ids have to be named here. Configure what you have; what is
+// left unset is simply not fetched.
 //
 // Credentials: the admin API authenticates every route except /health, /livez
 // and /metrics, and a token's environment scope narrows what it may read as

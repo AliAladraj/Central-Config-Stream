@@ -2,6 +2,12 @@
 CONTRIBUTING.md asks for one thing above all: be honest about what you did and
 did not verify. Nothing below is a formality — an unticked box with a sentence
 next to it is a better pull request than a ticked one that was not run.
+
+Documentation, changelog or a dependency bump, with no behaviour change? Say
+that in a line, say what you did check, and delete the rest. The checklist below
+is for changes that alter what the software does; dragging it through a typo fix
+teaches people to delete it without reading, and then it is gone from the pull
+requests where it mattered.
 -->
 
 ## What this changes, and why

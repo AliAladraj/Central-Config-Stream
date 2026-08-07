@@ -150,11 +150,13 @@ tar -xzf "central-config_${V}_linux_amd64.tar.gz"
 `checksums.txt` lists all eight archives and you downloaded one, so a bare
 `sha256sum -c` would fail on the seven that are not on disk.
 
-From source, when you want the tree rather than a published artefact:
+From source, when you want the tree rather than a published artefact. Now that
+tags exist, `@latest` resolves to the newest of them rather than to main, so the
+tree is what `@main` asks for:
 
 ```bash
 # the module path carries the repository name, the binary does not
-go install github.com/AliAladraj/Central-Config-Stream/cmd/central-config@latest
+go install github.com/AliAladraj/Central-Config-Stream/cmd/central-config@main
 
 # or from a checkout
 go build ./cmd/central-config && ./central-config --version

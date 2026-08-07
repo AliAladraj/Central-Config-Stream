@@ -5,242 +5,36 @@
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/AliAladraj/Central-Config-Stream/pkg/configclient.svg)](https://pkg.go.dev/github.com/AliAladraj/Central-Config-Stream/pkg/configclient)
 [![CI](https://github.com/AliAladraj/Central-Config-Stream/actions/workflows/ci.yml/badge.svg)](https://github.com/AliAladraj/Central-Config-Stream/actions/workflows/ci.yml)
 
-A control plane for microservice configuration: feature flags, per-service
-appsettings, and localization bundles for a fleet of services.
-
-A relational database is the source of truth. Every admin write is also written
-through to NATS JetStream KV, which consuming services watch and cache in
-memory. Consumers never call this service on the request path and never query
-the database — a config read in a consumer is a field access.
-
-> The repository is `Central-Config-Stream`; the project itself is
-> `central-config` — the Go module path, the binary, the compose service and the
-> default `SERVICE_NAME`. Only the repository name differs.
-
-One concept wears several names. The per-service JSON tree is **appsettings** in
-prose, `/configs` on the API, `MICROCONFIG` in KV, `microconfig` in the Go
-packages, `MicroSettings()` on the client, and `SETTINGS_JSON` in the database.
-They are all the same thing.
-
-## The problem
-
-Fleet-wide configuration has to reach running processes quickly, without every
-service polling a database. Polling gives you a choice between stale config and
-a database that carries the read load of the whole fleet. Pushing from the admin
-API to each service directly means the admin API has to know who is running.
-
-The split here is:
-
-- **Control plane** — this service. An HTTP admin API backed by PostgreSQL.
-  Admins write here. Consumers never call it.
-- **Data plane** — NATS JetStream KV. Consumers watch it and serve every read
-  from an in-memory cache.
-
-If the control plane or the database is down, consumers keep running on cached
-values. If NATS is down after a consumer has started, values freeze at last
-known good rather than erroring.
-
-## Requirements
-
-| what | version | why |
-|---|---|---|
-| **PostgreSQL** | any supported release; CI runs 17 | The source of truth in a deployed setup. The only production driver — `DB_DRIVER=postgres` is the default, and DDL for every table is in [`migrations/`](migrations/). |
-| **NATS 2.10+ with JetStream enabled** | 2.10+ | The distribution plane. KV buckets are a JetStream feature; a server without `--jetstream` cannot run this. |
-| **Go 1.26+** | see [`go.mod`](go.mod) (`go 1.26`) | To build the service, the console and `pkg/configclient`. |
-| **Node 20+** | see [`webui/package.json`](webui/package.json) | Only to build the React console. The service itself needs no Node. |
-
-**SQLite is the local test stack only.** `DB_DRIVER=sqlite` swaps in a parallel
-set of repositories so the JetStream path can be exercised on a laptop without
-a PostgreSQL instance. The schema is the same shape and the SQL differs only in
-bind-parameter syntax, but running that stack does not exercise the PostgreSQL
-repositories at all — those are covered by their own suite,
-`internal/pgintegration`, which CI runs against a real server. See
-[Known limitations](#known-limitations).
-
-## Quickstart
-
-The local stack runs the whole path on one machine: an admin write hits the HTTP
-API, lands in the database, is written through to KV, and is pushed to a
-consumer that serves it from memory.
-
-```bash
-docker compose -f deploy/compose/docker-compose.yml up --build
-# console: http://localhost:8090   admin API: :8080   NATS: nats://localhost:4222
-```
-
-Compose builds the React console inside the image, so nothing else is needed.
-**The stack seeds everything into environment 1 (`dev`)** — environments 2
-(`staging`) and 3 (`prod`) exist as rows but hold almost nothing. Every example
-below is environment 1.
-
-Read the seeded flag values. Reads need a bearer token now; the stack's is
-`local-dev-token`:
-
-```bash
-curl -s -H "Authorization: Bearer local-dev-token" \
-  "http://localhost:8080/flags/values?environmentId=1"
-```
-
-```json
-[{"id":100,"environmentId":1,"flagId":7,"flagKey":"search_v2","value":"on","enabled":1,"updatedAt":"..."},
- {"id":101,"environmentId":1,"flagId":8,"flagKey":"dark_mode","value":"off","enabled":0,"updatedAt":"..."},
- {"id":102,"environmentId":1,"flagId":9,"flagKey":"new_pricing","value":"0.25","enabled":1,"updatedAt":"..."}]
-```
-
-Now turn `dark_mode` on. `id` is the flag-value row id from the listing above:
-
-```bash
-curl -s -X PUT http://localhost:8080/flags/values \
-  -H "Authorization: Bearer local-dev-token" \
-  -H "Content-Type: application/json" \
-  -d '{"id":101,"enabled":1,"value":"on"}'
-```
-
-```json
-{"id":101,"environmentId":1,"flagId":8,"value":"on","enabled":1,"updatedAt":"2026-08-05T23:29:01Z"}
-```
-
-That request wrote the database (SQLite here), published KV key
-`FLAGS/1.dark_mode`, and pushed it to every watching consumer. The console's own
-consumer has it already:
-
-```bash
-curl -s http://localhost:8090/api/state | jq '.flags.dark_mode'
-```
-
-```json
-{"enabled": true, "value": "on", "updatedAt": "2026-08-05T23:29:01Z"}
-```
-
-Note `"enabled": 1` going in and `"enabled": true` coming out — see
-[the int/bool trap](#the-intbool-trap).
-
-[`deploy/compose/README.md`](deploy/compose/README.md) is the full walkthrough:
-the seeded data table, four things worth trying, and a two-terminal setup that
-needs no Docker at all.
-
-### Install
-
-Two paths need no Go toolchain. A distroless, non-root image is published to
-`ghcr.io/alialadraj/central-config`:
-
-```bash
-docker pull ghcr.io/alialadraj/central-config:0.1.1   # `latest` resolves to the same digest
-```
-
-It is linux/amd64 and linux/arm64 under one manifest list, so a pull picks the
-right architecture without the caller naming a platform.
-
-The other path is the
-[releases page](https://github.com/AliAladraj/Central-Config-Stream/releases/latest),
-which carries a `.tar.gz` per binary per platform — `central-config` and
-`testconsole`, each for linux and darwin on amd64 and arm64 — beside a single
-`checksums.txt` covering all eight:
-
-```bash
-V=0.1.1   # the version on the releases page, without the leading v
-BASE=https://github.com/AliAladraj/Central-Config-Stream/releases/download/v$V
-curl -sLO "$BASE/central-config_${V}_linux_amd64.tar.gz"   # or darwin_arm64, darwin_amd64, linux_arm64
-curl -sLO "$BASE/checksums.txt"
-sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c
-tar -xzf "central-config_${V}_linux_amd64.tar.gz"
-```
-
-`--ignore-missing` is the part that makes that one line rather than three:
-`checksums.txt` lists all eight archives and you downloaded one, so a bare
-`sha256sum -c` would fail on the seven that are not on disk.
-
-From source, when you want the tree rather than a published artefact. Now that
-tags exist, `@latest` resolves to the newest of them rather than to main, so the
-tree is what `@main` asks for:
-
-```bash
-# the module path carries the repository name, the binary does not
-go install github.com/AliAladraj/Central-Config-Stream/cmd/central-config@main
-
-# or from a checkout
-go build ./cmd/central-config && ./central-config --version
-```
-
-Either way the binary honestly says `dev (commit none, built unknown)`: neither
-`go install` nor a plain `go build` passes `-ldflags`, so nothing is stamped in.
-Use it for a quick look, not for telling two deployments apart — `make build`
-stamps the real values, and so does everything published above. A binary
-unpacked from a release archive prints its tag, short commit and build time,
-because [`.github/workflows/release.yml`](.github/workflows/release.yml) passes
-the `-ldflags` a laptop build does not.
-[`docs/RELEASING.md`](docs/RELEASING.md) is the other side of this: how a tag is
-cut and how to check one landed.
-
-**The image is the service alone; it serves no browser UI.** The console
-is a separate binary, and its React bundle is not in the archives — `web/` is
-gitignored and building it needs Node — so an unpacked `testconsole` answers
-`/api/state` and `/api/events` but tells the browser the UI has not been built.
-Getting the console *with* its UI means the compose stack above, which builds
-the bundle in a Node stage, or `cd webui && npm ci && npm run build` beside the
-binary.
-
-The whole repository, console included:
-
-```bash
-go build ./... && go vet ./... && go test ./...
-cd webui && npm ci && npm run build   # React console, writes ../web
-```
-
-## The console
-
-`webui/` + [`cmd/testconsole`](cmd/testconsole) is a React console that plays a
-consuming microservice. It holds a live `configclient` cache warmed from KV and
-serves a browser UI showing that cache change as you write. It is the only
-showable artefact in an otherwise headless project, and it demonstrates things
-the API alone cannot:
+Realtime configuration for a fleet of services. Change a feature flag, a
+service's settings, or a translation in one place, and every running service
+sees it within milliseconds — no polling, no restart, no redeploy.
 
 ![The console's Overview view: health tiles, a green in-sync verdict comparing the database against the consumer's cache, the recent-change audit rows, and a live KV push log showing three keys arriving within 25ms of their writes.](docs/assets/console-overview.png)
 
-- **Seven views.** Overview (health, drift, recent pushes), Audit log,
-  System (health, metrics, inventory), Flags (definitions and an
-  environment × flag matrix), Appsettings, Localization, and
-  Environments & services.
-- **An environment switcher** in the header that narrows every view to one
-  environment, or shows all of them.
-- **Live SSE push.** `GET /api/events` streams every KV update the consumer
-  receives; the right-hand panel fills in as writes land, with no polling.
-- **A drift panel.** The one place anything compares the database against what a
-  consumer is actually serving. It reads the admin API and the consumer's cache
-  and reports each disagreement — a row the consumer never received, a cached
-  key with no row behind it, a value that differs. Rows outside the watched
-  environment are counted as out of scope, never as drift.
-- **A measured propagation latency.** A write is marked before the request goes
-  out, and the KV push that follows is timestamped on arrival; the header shows
-  `last push +NNms` and each event carries its own figure. It is the number that
-  makes "write-through to KV" concrete.
+## Why I built this
 
-![The Flags view: an environment × flag matrix with dev, staging and prod across the top, a filled cell wherever a flag value row exists and an add button where none does, beside the consumer's cached FLAGS, MICROCONFIG and LOCALIZATION values.](docs/assets/console-flags-matrix.png)
+I wanted the realtime part of Firebase — change a value, and every connected
+client sees it instantly. But Firebase is a paid, hosted service, and I didn't
+want that dependency or that bill. What I actually needed the realtime sync
+*for* was configuration: feature flags, per-service settings, localization. So
+I built that piece myself, on open-source parts I can self-host: PostgreSQL as
+the source of truth, NATS JetStream to push changes out, and a small Go client
+that keeps every value in memory.
 
-The console proxies its admin calls so the browser never holds the token. It
-binds to `127.0.0.1` by default, and it warns loudly when it is not on loopback,
-because it attaches a full-scope admin token to everything it forwards. `PORT`
-is read against `BIND_ADDR`: both `8090` and `:8090` bind loopback with
-`BIND_ADDR` unset, and only a `PORT` that names a host — `0.0.0.0:8090`, which
-is what the compose stack sets so its published port is reachable — widens the
-bind on its own. The embedded NATS server follows the same variable.
+To be clear about scope: this is **not** a general Firebase replacement. There
+are no mobile SDKs, no per-user data, no offline sync. It does one thing — get
+configuration from an admin API into the memory of every running service,
+fast — and it aims to do that one thing well.
 
-It then checks the `Host` header against an allowlist *before* it looks at
-`Origin`, because `Origin`-versus-`Host` alone is defeated by DNS rebinding: a
-page on `evil.example` whose DNS answer is `127.0.0.1` sets both to itself and
-they agree. Only `Host` gives it away, since a browser fills that in from the
-address it was pointed at. Loopback is always accepted under all of its names;
-so is the address the console is bound to, unless that is a wildcard, which
-names no host. `ALLOWED_HOSTS` is where any other name is said out loud — so
-reaching the console from another machine needs both a wider bind *and* that
-name listed, or it answers 403. `/api/state` and `/api/events` are behind the
-same guard, because they hand over the consumer's whole cache.
+## How it works, in one paragraph
 
-Beyond that it forwards only `application/json` to a named list of API paths,
-and — when `web/` has not been built — serves a page telling you to build it
-instead of a bare 404.
-
-## How it works
+You write to an HTTP admin API. The write lands in PostgreSQL (the source of
+truth) and is immediately pushed to NATS JetStream KV. Your services watch KV
+and keep every value in an in-memory cache — so a config read in your service
+is just a field access. Your services never call the admin API and never touch
+the database. If the admin API or the database goes down, services keep running
+on their cached values. If NATS goes down, values freeze at last known good
+instead of erroring.
 
 ```mermaid
 flowchart LR
@@ -260,366 +54,284 @@ flowchart LR
     kv -->|watch| s3[Service C<br/>in-memory cache]
 ```
 
-The reconciler is not a separate deployable — it runs in-process, started by the
-same binary when `PUBLISH_ENABLED=true`.
+One honest detail up front: the database write and the KV push are **not one
+transaction**. If the process crashes between them, KV is stale until the
+built-in reconciler resyncs it (every `RECONCILE_INTERVAL`). Drift is bounded,
+not impossible. [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
+§3.2 covers what a transactional outbox would buy and why it isn't built yet.
 
-The dual write is not transactional. PostgreSQL is written first and the KV
-write follows; a KV failure is logged and does not fail the admin request. The
-reconciler sweeps the database against KV on `RECONCILE_INTERVAL` and republishes
-anything missing or stale, so drift is bounded by that interval rather than
-permanent. See [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
-§3.2 for what that costs and what a transactional outbox would buy.
-
-### Behaviour when NATS is down
-
-The service starts and serves reads with NATS unreachable, retrying bucket
-provisioning in the background on every reconcile cycle. Startup takes about
-fifteen seconds longer while the first provisioning attempt times out.
-`GET /health` reports `"nats":"disconnected"` and answers 503; `GET /livez`
-stays 200, so an orchestrator takes the pod out of the load balancer instead of
-killing it. Writes still return 200 — the database is the source of truth and
-accepts them — but the KV publish fails, is logged, and is healed by the
-reconciler once NATS returns.
-
-## KV key layout
-
-Three buckets. Keys are environment-scoped so a consumer can watch one prefix
-and receive only what belongs to its environment.
-
-| bucket | key | example (seeded env 1) |
-|---|---|---|
-| `FLAGS` | `{environmentId}.{flagKey}` | `1.search_v2` |
-| `MICROCONFIG` | `{environmentId}.{microserviceId}` | `1.1` |
-| `LOCALIZATION` | `{environmentId}.{microserviceId}.{locale}` | `1.1.pt-BR` |
-
-Values:
-
-- `FLAGS` — `{"enabled": true, "value": "0.25", "updatedAt": "..."}`. `value` is
-  a free-form string, used for things like rollout percentages.
-- `MICROCONFIG` — the entire appsettings tree as one JSON document, so one push
-  replaces it atomically and a consumer can never observe half an update.
-- `LOCALIZATION` — one JSON object per locale: `{"catalog.title": "..."}`.
-
-Buckets keep five historical values per key, which is the rollback depth, and a
-single value may not exceed **512 KiB**. The admin API enforces the same ceiling
-before the database write and answers 400 (`settings json exceeds the maximum
-value size`), so a payload can never be accepted with a 201 and then refused by
-JetStream forever afterwards.
-
-**No secrets in KV.** Anyone with NATS credentials can read every key, and every
-consumer holds it in plaintext memory. The convention is that secret-shaped
-fields carry a marker instead of a value — `"accessKeyId": "env:STORAGE_ACCESS_KEY_ID"`
-— which the consumer resolves at bind time from its own secret store. The seeded
-example document in [`internal/database/sqlite.go`](internal/database/sqlite.go)
-demonstrates the shape.
-
-## Admin API
-
-**Every route except `GET /health`, `GET /livez` and `GET /metrics` requires a
-bearer token.** Reads used to be anonymous; they are not any more, because a
-single unauthenticated GET was enough to walk off with every appsettings tree
-and bundle in the estate.
-
-Writes are additionally rate-limited (`WRITE_RATE_LIMIT_PER_MINUTE`, default
-120) and recorded in an audit log with the actor, the target and a redacted
-request body. The limiter has three key namespaces: `ip:<ip>` at the edge for a
-write that arrives with a configured credential, `anon:<ip>` at the edge for one
-that does not — charged at four times the rate, so a quarter of the budget, and
-kept separate so a flood of credential-less writes cannot spend what an
-authenticated caller behind the same proxy IP is about to need — and `t:<name>`
-per credential after authentication. `GET /inventory` is metered too, under
-`inv:t:<name>`; it is the only rate-limited read, because it is the only one
-that is not bounded by a page in SQL.
-
-### Token scope narrows reads as well as writes
-
-`ADMIN_TOKENS=ci-dev:1|2:secret` gives a token the environments 1 and 2. That
-scope applies in both directions:
-
-- **Writes** to any other environment answer **403**.
-- **Listings** (`/flags/values`, `/configs/values`, `/localization`,
-  `/environments`) return only rows in environments 1 and 2.
-- **`GET /inventory`** and **`GET /audit`** are narrowed the same way; audit
-  rows that carry no environment at all are invisible to a scoped token.
-- **A single row fetched by id** that lives outside the scope answers **404**,
-  not 403 — any other answer would confirm it exists.
-
-`ADMIN_TOKEN` (singular) is the shared full-scope form, recorded as the actor
-`shared`. With neither variable set, auth is disabled and the service warns at
-startup — dev only.
-
-### Routes
-
-```
-GET  /health      readiness: pings the database AND reports NATS; 503 if either is down
-GET  /livez       liveness: static, touches no dependency
-GET  /metrics     Prometheus: publish success/failure, reconcile drift, HTTP
-
-GET  /inventory   every editable row with its id — paged, ?limit (default 100, max 500) &offset; rate-limited
-GET  /audit       the write audit trail — ?actor=&from=&to=&limit=&offset=
-
-GET    /environments                 ?limit=&offset=
-POST   /environments
-DELETE /environments/{id}
-
-GET    /microservices                ?limit=&offset=
-POST   /microservices
-DELETE /microservices/{id}
-
-GET    /configs/{id}                 the microservice definition (belongs to no environment)
-GET    /configs/values               ?microserviceId=&environmentId=&limit=&offset=
-GET    /configs/values/{id}
-POST   /configs/values
-PUT    /configs/values               the id goes in the body, not the path
-DELETE /configs/values/{id}
-
-GET    /flags                        ?flagKey=&limit=&offset=
-GET    /flags/{id}
-POST   /flags
-DELETE /flags/{id}
-
-GET    /flags/values                 ?environmentId=&flagKey=&limit=&offset=
-GET    /flags/values/{id}
-POST   /flags/values
-PUT    /flags/values                 the id goes in the body, not the path
-DELETE /flags/values/{id}
-
-GET    /localization                 ?microserviceId=&environmentId=&locale=&limit=&offset=
-GET    /localization/{id}
-GET    /localization/lookup/{msId}/{envId}/{locale}
-POST   /localization
-PUT    /localization/values          the id goes in the body, not the path
-DELETE /localization/{id}
-```
-
-Two shapes to note. `DELETE` is registered on `/{id}` only — there is no delete
-on a collection path. And localization is the odd one out: it creates at
-`/localization` and deletes at `/localization/{id}`, but updates at
-`/localization/values`.
-
-Every response carries `X-Content-Type-Options: nosniff`, and
-`Strict-Transport-Security` when the connection is really TLS. When
-`TLS_CERT_FILE`/`TLS_KEY_FILE` are set the server floor is **TLS 1.3** — nothing
-in the stack (browsers, the console proxy, the Go client, Prometheus) needs 1.2
-kept open.
-
-### Writing
-
-Creating an appsettings row and a bundle, against the local stack:
+## Try it in two minutes
 
 ```bash
-curl -s -X POST http://localhost:8080/configs/values \
-  -H "Authorization: Bearer local-dev-token" \
-  -H "Content-Type: application/json" \
-  -d '{"microserviceId":2,"environmentId":2,"settingsJson":{"http":{"timeoutMs":1500}}}'
-# 201 {"id":203,"microserviceId":2,"environmentId":2,"settingsJson":{...},"updatedAt":"..."}
-
-curl -s -X POST http://localhost:8080/localization \
-  -H "Authorization: Bearer local-dev-token" \
-  -H "Content-Type: application/json" \
-  -d '{"microserviceId":1,"environmentId":2,"locale":"en-US","bundleJson":{"catalog.title":"Catalog"}}'
-# 201 {"id":302,"microserviceId":1,"environmentId":2,"locale":"en-US","bundleJson":{...},"updatedAt":"..."}
+docker compose -f deploy/compose/docker-compose.yml up --build
+# console: http://localhost:8090   admin API: :8080   NATS: nats://localhost:4222
 ```
 
-`settingsJson` and `bundleJson` must be JSON **objects** — a top-level array or
-scalar is well-formed JSON that would break every consumer's deserialization at
-once, so it is refused with 400.
-
-A flag value has its own three rules, applied identically on `POST` and `PUT`:
-`value` must be non-empty and at most **4000 characters** — runes, because the
-`VARCHAR(4000)` column counts characters and not bytes — and `enabled` (like
-`isActive` on a flag definition) must be exactly `0` or `1`. The column would
-take any `SMALLINT`, but only 0 and 1 mean anything, since the KV payload
-collapses everything non-zero to `true`. Each of these used to be a 500 from the
-driver, or — for an empty `value` — a silently published empty string that
-arrives at every consumer in the environment looking like a parse bug.
-
-### Optimistic concurrency
-
-Every `PUT` accepts an optional `expectedUpdatedAt`. The write applies only
-while the stored row still carries that timestamp; otherwise it answers **409**
-and changes nothing. Absent, the original last-write-wins behaviour stands. It
-is implemented and tested in all three domains — flag values, appsettings and
-bundles — against both the PostgreSQL and SQLite repositories.
+The stack seeds demo data into environment 1 (`dev`). Read the seeded flags
+(the local token is `local-dev-token`):
 
 ```bash
-# read the row, keep its updatedAt
 curl -s -H "Authorization: Bearer local-dev-token" \
-  http://localhost:8080/flags/values/101
-# {"id":101,...,"updatedAt":"2026-08-05T23:27:56Z"}
-
-# a stale timestamp loses the race
-curl -s -o /dev/null -w '%{http_code}\n' -X PUT http://localhost:8080/flags/values \
-  -H "Authorization: Bearer local-dev-token" \
-  -H "Content-Type: application/json" \
-  -d '{"id":101,"enabled":0,"value":"off","expectedUpdatedAt":"2020-01-01T00:00:00Z"}'
-# 409
+  "http://localhost:8080/flags/values?environmentId=1"
 ```
 
-### The int/bool trap
+Flip `dark_mode` on (`id` 101 comes from that listing):
 
-`enabled` is an **integer** on the admin API and a **boolean** in KV. Same
-concept, two types, because the API mirrors the `SMALLINT` column and KV
-mirrors what a consumer wants to branch on:
+```bash
+curl -s -X PUT http://localhost:8080/flags/values \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{"id":101,"enabled":1,"value":"on"}'
+```
 
-| plane | shape |
-|---|---|
-| `POST`/`PUT` `/flags/values` request, and every API response | `"enabled": 1` / `"enabled": 0` |
-| `GET /inventory` | `"enabled": 1` / `"enabled": 0` |
-| KV value in `FLAGS`, and `configclient.FlagPayload` | `"enabled": true` / `"enabled": false` |
+That one request wrote the database, published KV key `FLAGS/1.dark_mode`, and
+pushed it to every watching consumer. The console's own consumer already has
+it:
 
-The conversion is `Enabled != 0`, done once on the publish path. A tool that
-reads a flag value from the API and writes it back unchanged is fine; a tool
-that reads from KV and posts what it found is not.
+```bash
+curl -s http://localhost:8090/api/state | jq '.flags.dark_mode'
+# {"enabled": true, "value": "on", "updatedAt": "..."}
+```
 
-## Integrating a consumer
+Watch the console header while you do this — it shows `last push +NNms`, the
+measured time from your write to the value landing in the consumer's memory.
+
+Note `"enabled": 1` going in and `"enabled": true` coming out — that's
+deliberate, see [the int/bool trap](#the-intbool-trap).
+[`deploy/compose/README.md`](deploy/compose/README.md) is the full walkthrough,
+including a two-terminal setup that needs no Docker.
+
+## Install
+
+```bash
+# container image (linux/amd64 + arm64), service only — no browser UI inside
+docker pull ghcr.io/alialadraj/central-config:0.1.1   # :latest also works
+
+# prebuilt binaries — see the releases page for darwin/linux tarballs
+# checksums.txt covers all eight archives, so check just the one you grabbed:
+#   sha256sum --ignore-missing -c checksums.txt   (macOS: shasum -a 256 --ignore-missing -c)
+
+# from source — @main, because now that tags exist @latest means the newest tag
+go install github.com/AliAladraj/Central-Config-Stream/cmd/central-config@main
+```
+
+A source-built binary reports `--version` as `dev` — only `make build` and the
+release pipeline stamp real version info in. The console UI is not in the image
+or the tarballs: run the compose stack, or build it yourself with
+`cd webui && npm ci && npm run build`. [`docs/RELEASING.md`](docs/RELEASING.md)
+covers how releases are cut and verified.
+
+## Requirements
+
+| what | version | why |
+|---|---|---|
+| PostgreSQL | any supported release; CI runs 17 | Source of truth. `DB_DRIVER=postgres` is the default; DDL is in [`migrations/`](migrations/). |
+| NATS | 2.10+, JetStream enabled | The distribution plane. KV buckets need `--jetstream`. |
+| Go | 1.26+ | To build the service, console, and client. |
+| Node | 20.19+ or 22.12+ | Only to build the React console. |
+
+SQLite (`DB_DRIVER=sqlite`) exists so the whole stack runs on a laptop with no
+PostgreSQL — it's for local use and tests, not deployment. The PostgreSQL code
+paths have their own CI suite (`internal/pgintegration`) against a real server.
+
+## The console
+
+`webui/` + [`cmd/testconsole`](cmd/testconsole) is a React console that plays
+the role of a consuming service: it holds a live `configclient` cache and shows
+it change as you write. Seven views — overview, audit log, system, flags (with
+an environment × flag matrix), appsettings, localization, and environments —
+plus three things the API alone can't show you:
+
+- **Live push.** An SSE stream fills the right-hand panel as KV updates land.
+  No polling.
+- **A drift panel.** It compares the database against what the consumer is
+  actually serving and reports every disagreement.
+- **Measured latency.** Each write is timed to the KV push that follows;
+  `last push +NNms` in the header is the number that makes "realtime" concrete.
+
+![The Flags view: an environment × flag matrix with dev, staging and prod across the top, a filled cell wherever a flag value row exists and an add button where none does, beside the consumer's cached FLAGS, MICROCONFIG and LOCALIZATION values.](docs/assets/console-flags-matrix.png)
+
+Security, short version: the console proxies admin calls so the browser never
+holds the token, binds to `127.0.0.1` by default and warns loudly when it
+doesn't, and checks the `Host` header against an allowlist before trusting
+`Origin` — because `Origin` alone is defeated by DNS rebinding. Reaching it
+from another machine needs both a wider bind (`BIND_ADDR`) and the name listed
+in `ALLOWED_HOSTS`; otherwise it answers 403.
+
+## Using it from your service
 
 **Go** — import [`pkg/configclient`](pkg/configclient):
 
 ```go
 c, err := configclient.New(ctx, configclient.Options{
     NATSURL:        "nats://nats.example.internal:4222",
-    EnvironmentID:  1, // the environment the local stack seeds
+    EnvironmentID:  1,
     MicroserviceID: 1, // scopes the watch to this service's own keys
 })
 if err != nil {
     return fmt.Errorf("configclient: %w", err)
 }
-defer c.Close()
+defer c.Close() // check err first — on failure c is nil and Close panics
 
-if c.FlagEnabled("search_v2") { ... }              // true in the seeded env 1
-raw, ok := c.MicroSettings(1)                       // catalog-api's appsettings tree
-text, ok := c.Translate(1, "pt-BR", "catalog.title") // "Catálogo"
+if c.FlagEnabled("search_v2") { ... }
+raw, ok := c.MicroSettings(1)
+text, ok := c.Translate(1, "pt-BR", "catalog.title")
 ```
 
-Check the error before the `defer`: on failure `c` is nil and `c.Close()`
-panics.
+`New` blocks until the client's initial values are loaded, so a service never
+starts serving on an empty cache. After that, every read is a memory access.
+`Options.HTTPFallback` optionally hydrates over the admin API at cold start if
+JetStream is unreachable — it needs a token scoped to the same environment.
 
-`New` blocks until the initial values for the client's scope are loaded, so a
-service does not start serving on an empty cache — that is how a "feature
-disabled everywhere" incident happens. Reads after that are memory accesses.
-Setting `MicroserviceID` matters: without it the client caches every service's
-configuration in the process, and `Status().FleetWide` reports that it did.
-
-`Options.HTTPFallback` is an optional cold-start path: if JetStream is
-unreachable at boot it hydrates what it can over the admin API instead of
-booting with no config at all. It runs only from `New`, never from a read.
-Because every admin route now needs a credential, it requires
-`HTTPFallback.Token` — scoped to the same environment as the client, since a
-read outside a token's scope answers 404 like a row that does not exist.
-`AllowUnauthenticated` exists for a deployment running with auth switched off,
-which is dev only.
-
-**Any other language** — there is no shipped client, but the consumer contract
-is small and fully specified in
+**Any other language** — the consumer contract is small and fully specified in
 [`docs/CONSUMER_CONTRACT.md`](docs/CONSUMER_CONTRACT.md): what to watch, what
-the values look like, how to gate startup, why the watch handler must be
-idempotent, how to resolve the secret markers, and how to test the whole loop
-against the local stack.
+the values look like, and how to test against the local stack.
+
+## The data plane: KV layout
+
+Three buckets, keys scoped by environment so a consumer can watch one prefix:
+
+| bucket | key | value |
+|---|---|---|
+| `FLAGS` | `{envId}.{flagKey}` | `{"enabled": true, "value": "0.25", "updatedAt": "..."}` |
+| `MICROCONFIG` | `{envId}.{microserviceId}` | the whole appsettings tree as one JSON document — one push replaces it atomically |
+| `LOCALIZATION` | `{envId}.{microserviceId}.{locale}` | one JSON object per locale |
+
+Each key keeps five historical values (the rollback depth) and a value may not
+exceed **512 KiB** — the API enforces the same ceiling with a 400, so nothing
+gets accepted and then refused by JetStream later.
+
+**Never put secrets in KV.** Anyone with NATS credentials can read every key.
+The convention: secret-shaped fields carry a marker —
+`"accessKeyId": "env:STORAGE_ACCESS_KEY_ID"` — which each consumer resolves
+from its own secret store.
+
+## The admin API
+
+Every route except `/health`, `/livez` and `/metrics` requires a bearer token.
+Writes are rate-limited per caller and recorded in an audit log with the actor
+and a redacted body.
+
+**Token scope cuts both ways.** `ADMIN_TOKENS=ci-dev:1|2:secret` gives a token
+environments 1 and 2: writes elsewhere answer 403, listings only return rows it
+can see, and a single row fetched by id from outside the scope answers **404**,
+not 403 — any other answer would confirm the row exists. `ADMIN_TOKEN`
+(singular) is the shared full-scope form. With neither set, auth is off and the
+service warns at startup — dev only.
+
+The full API — every route, every schema, every error shape — is
+[`docs/openapi.yaml`](docs/openapi.yaml). The quirks worth knowing before you
+integrate:
+
+- **`PUT` carries the id in the body**, not the path, on `/flags/values`,
+  `/configs/values` and `/localization/values`.
+- **Localization is the odd one out**: create at `/localization`, update at
+  `/localization/values`, delete at `/localization/{id}`.
+- **`settingsJson` / `bundleJson` must be JSON objects.** A top-level array or
+  scalar would break every consumer's deserialization at once, so it's a 400.
+- **Flag values**: `value` non-empty, at most 4000 characters; `enabled` must
+  be exactly `0` or `1`.
+- **Optimistic concurrency**: every `PUT` accepts an optional
+  `expectedUpdatedAt`; if the row changed since, the write answers **409** and
+  does nothing. Omit it and last-write-wins stands.
+
+<details>
+<summary>All routes at a glance</summary>
+
+```
+GET  /health      readiness: pings the database AND reports NATS; 503 if either is down
+GET  /livez       liveness: static, touches no dependency
+GET  /metrics     Prometheus: publish success/failure, reconcile drift, HTTP
+
+GET  /inventory   every editable row with its id — paged, rate-limited
+GET  /audit       the write audit trail — ?actor=&from=&to=&limit=&offset=
+
+GET/POST         /environments        DELETE /environments/{id}
+GET/POST         /microservices       DELETE /microservices/{id}
+
+GET              /configs/{id}
+GET/POST/PUT     /configs/values      GET/DELETE /configs/values/{id}
+GET/POST         /flags               GET/DELETE /flags/{id}
+GET/POST/PUT     /flags/values        GET/DELETE /flags/values/{id}
+GET/POST         /localization        GET/DELETE /localization/{id}
+PUT              /localization/values
+GET              /localization/lookup/{msId}/{envId}/{locale}
+```
+
+Listings page with `?limit` (default 100, max 500) `&offset`. `DELETE` exists
+only on `/{id}` paths.
+</details>
+
+### The int/bool trap
+
+`enabled` is an **integer** on the API (`0`/`1`, mirroring the database column)
+and a **boolean** in KV (`true`/`false`, what a consumer branches on). The
+conversion happens once, on the publish path. A tool that reads from the API
+and writes back to the API is fine; a tool that reads from KV and posts what it
+found is not.
 
 ## Configuration
 
-Entirely environment-driven. [`.env.example`](.env.example) documents every
-variable both binaries read, with its default in brackets — read it rather than
-guessing. The service auto-loads a `.env` file at startup via `godotenv.Load()`;
-**the test console does not**, so its variables have to be exported or set on
-the command line.
+Everything is environment-driven. [`.env.example`](.env.example) documents
+every variable with its default — read that rather than guessing. The service
+auto-loads `.env`; the console does not.
 
-Beyond the obvious `DB_DRIVER` / `CONN_STRING` / `NATS_URL` / `PUBLISH_ENABLED`:
-
-| variable | what it bounds |
-|---|---|
-| `DB_MAX_OPEN_CONNS` `[20]`, `DB_MAX_IDLE_CONNS` `[5]` | PostgreSQL connections this process may hold. Left unbounded, a slow query plus replicas plus the reconciler can walk a shared instance into `max_connections` — and every Postgres connection is a backend process, so the cost lands on everything else on that instance before the refusals start. Not applied to SQLite, which runs on one connection. |
-| `DB_CONN_MAX_LIFETIME` `[30m]`, `DB_CONN_MAX_IDLE_TIME` `[5m]` | How long a connection lives and how long an idle one is kept. Without a lifetime, a connection survives a failover or a pgbouncer restart as a half-dead socket. |
-| `RECONCILE_PRUNE_MAX_FRACTION` `[0.2]` | The share of a KV bucket one reconcile cycle may delete. A database that came back empty would otherwise have the reconciler purge the whole fleet's configuration. |
-| `WRITE_RATE_LIMIT_PER_MINUTE` `[120]` | Writes per caller per minute, and the ceiling for each of the limiter's key namespaces above; `<= 0` disables it. |
-| `TLS_CERT_FILE`, `TLS_KEY_FILE` | Both set ⇒ HTTPS with a TLS 1.3 floor and HSTS. Otherwise plain HTTP with a startup warning. |
-
-Console-only: `BIND_ADDR` `[127.0.0.1]`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`,
-`ENVIRONMENT_ID` `[1]`, `CENTRAL_CONFIG_URL`, `NATS_EMBEDDED` `[false]`,
-`WEB_DIR` `[web]`.
-
-`ADMIN_TOKENS` is `NAME:ENV_SCOPE:SECRET`, comma separated. A **name** is
-limited to `[A-Za-z0-9._-]` and 100 characters, and a **secret may not contain a
-comma** — entries are split on commas before they are split on colons, so a
-comma inside a secret silently starts an entry, and possibly a full-scope token,
-of its own. The name check is what catches that at startup rather than in
-production.
-
-A malformed value is a **fatal startup error**, and the line is drawn after
-trimming. `ADMIN_TOKENS=` — which is what an env file renders for an absent
-value — is indistinguishable from the variable being unset, so it takes the
-documented, loudly-warned development path. A value that holds separators but
-yields no entry (`" , , "`, what a Helm value referencing an empty secret
-renders to) is not blank: something was meant to be there, so it stops the
-process rather than quietly disabling authentication. A whitespace-only
-`ADMIN_TOKEN` is fatal for the opposite reason — it is a live full-scope
-credential whose secret is a space, with no warning printed at all.
+Two that deserve a warning here: `ADMIN_TOKENS` is `NAME:ENV_SCOPE:SECRET`,
+comma-separated — a malformed value is a **fatal startup error**, on purpose,
+because the failure mode of parsing it leniently is a silently created
+full-scope token. And `RECONCILE_PRUNE_MAX_FRACTION` (default 0.2) caps how
+much of a KV bucket one reconcile cycle may delete, so a database that comes
+back empty can't have the reconciler purge the whole fleet's configuration.
 
 ## Documentation
 
 Read in this order: the compose walkthrough to see it work, the consumer
-contract to integrate against it, then security and production readiness before
-deploying it.
+contract to integrate, then security and production readiness before deploying.
 
 | file | what it covers |
 |---|---|
-| [`deploy/compose/README.md`](deploy/compose/README.md) | the local stack: seeded data, what to try, and a Docker-free two-terminal setup |
-| [`docs/CONSUMER_CONTRACT.md`](docs/CONSUMER_CONTRACT.md) | the consumer contract — what to watch, value shapes, caching semantics, in any language |
-| [`docs/openapi.yaml`](docs/openapi.yaml) | the admin API as OpenAPI 3.1 — every route above, the schema each carries, and which failure answers with what |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | auth model, token scoping, secret handling, threat notes |
-| [`docs/DEPLOY_JETSTREAM_K8S.md`](docs/DEPLOY_JETSTREAM_K8S.md) | deploying NATS JetStream and this service on Kubernetes |
-| [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | ECS log shape, metrics, what to alert on |
+| [`deploy/compose/README.md`](deploy/compose/README.md) | the local stack: seeded data, things to try, a Docker-free setup |
+| [`docs/CONSUMER_CONTRACT.md`](docs/CONSUMER_CONTRACT.md) | the consumer contract, in any language |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | the admin API as OpenAPI 3.1 |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | auth model, token scoping, secret handling |
+| [`docs/DEPLOY_JETSTREAM_K8S.md`](docs/DEPLOY_JETSTREAM_K8S.md) | deploying on Kubernetes |
+| [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | log shape, metrics, what to alert on |
 | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) | current gaps, honestly listed |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to build, test and lint, and the ~45 sites a new config domain touches |
-| [`docs/RELEASING.md`](docs/RELEASING.md) | cutting a release: finalising the changelog, tagging, and checking what the tag produced |
-| [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and what is in scope |
-| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | what taking part here asks of everyone, and the private channel for reporting a problem |
-| [`CHANGELOG.md`](CHANGELOG.md) | what each release changed, written as capability rather than commit history |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | how releases are cut and verified |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | building, testing, and adding a config domain |
+| [`SECURITY.md`](SECURITY.md) | reporting a vulnerability |
+| [`CHANGELOG.md`](CHANGELOG.md) | what each release changed |
 
-PostgreSQL DDL for every table is in [`migrations/`](migrations/), numbered in
-the order it applies.
+> Naming, once: the repository is `Central-Config-Stream`; the project, module
+> path, binary and compose service are all `central-config`. And the
+> per-service JSON tree is called **appsettings** in prose, `/configs` on the
+> API, `MICROCONFIG` in KV and `MicroSettings()` on the client — all the same
+> thing.
 
 ## Known limitations
 
+I keep this list current on purpose — it's cheaper to read than to discover.
+
 - **The dual write is not transactional.** A crash between the database commit
-  and the KV write leaves KV stale until the next reconcile. Bounded by
-  `RECONCILE_INTERVAL`, not eliminated. A transactional outbox would close it
-  and is deliberately not built — see
-  [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) §3.2.
-- **PostgreSQL is newly adopted and has never run a deployment.** The SQL is
-  exercised by `internal/pgintegration` against a real server on every CI run,
-  which is a great deal more than compilation, but no production instance has
-  yet carried this schema. Treat the first deployment accordingly.
-- **There is no migration runner.** `migrations/` is DDL you apply yourself;
-  nothing records what has been applied and there is no down path. The file
-  numbers are the apply order, so `psql -f` over the directory in lexical order
-  works — see [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)
-  §3.4.
-- **Almost everything above the repositories is covered against SQLite only.**
-  `internal/pgintegration` now drives the whole service over a real PostgreSQL
-  in one file — `app_scope_test.go` builds the app through `app.NewApp` and
-  exercises token scoping, the row-environment lookup and the audit insert
-  through HTTP, because the security middleware has a Postgres branch nothing
-  else executed. That is the exception, not the rule: every other end-to-end and
-  handler test still runs on SQLite, so the rest of the wiring above the
-  repositories is verified against the mirror schema rather than the real one.
-- **KV has no per-key ACLs out of the box.** With a single shared credential,
-  any consumer holding it can read every environment's keys. The environment
-  prefix is a scoping convention for watches, not an access control boundary.
-  This is why secrets must not be in KV;
-  [`docs/SECURITY.md`](docs/SECURITY.md) has the NATS permission model that
-  narrows it.
-- **TLS is opt-in.** With `TLS_CERT_FILE`/`TLS_KEY_FILE` unset the admin API
-  serves plain HTTP and warns at startup, on the assumption that TLS terminates
-  at an ingress.
-- **The HTTP cold-start fallback fetches flags by row id.**
-  `GET /flags/values?environmentId=` does exist — it is the first thing the
-  quickstart above calls — but `configclient`'s fallback does not use it. It
-  fetches `GET /flags/values/{id}` one row at a time, so
-  `HTTPFallback.FlagValueIDs` has to name the row ids by hand, and what is left
-  unconfigured is simply not fetched. Closing this is a change to
-  `pkg/configclient/httpfallback.go`, not a new server route.
+  and the KV push leaves KV stale until the next reconcile. Bounded, not
+  eliminated.
+- **PostgreSQL is newly adopted and has never carried a production
+  deployment.** CI exercises it against a real server, but treat a first
+  deployment accordingly.
+- **There is no migration runner.** `migrations/` is numbered DDL you apply
+  yourself; nothing tracks what's applied and there's no down path.
+- **Most tests above the repository layer run on SQLite.** The PostgreSQL
+  integration suite covers the repositories and the token-scoping path
+  end-to-end; the rest of the wiring is verified against the mirror schema.
+- **KV has no per-key ACLs out of the box.** The environment prefix scopes
+  watches; it is not an access-control boundary. This is why secrets stay out
+  of KV — [`docs/SECURITY.md`](docs/SECURITY.md) has the NATS permission model
+  that narrows it.
+- **TLS is opt-in**, on the assumption it terminates at an ingress. Unset, the
+  API serves plain HTTP and warns at startup.
+- **The HTTP cold-start fallback fetches flags by row id**, one at a time, so
+  `HTTPFallback.FlagValueIDs` must name them by hand. Fixing this is a client
+  change, not a new server route.
 
 ## Licence
 

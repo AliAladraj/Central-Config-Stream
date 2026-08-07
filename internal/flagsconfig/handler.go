@@ -22,7 +22,11 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrInvalidFlagID),
 		errors.Is(err, ErrInvalidEnvironmentID),
-		errors.Is(err, ErrInvalidFlagKey):
+		errors.Is(err, ErrInvalidFlagKey),
+		errors.Is(err, ErrInvalidFlagValue),
+		errors.Is(err, ErrFlagValueTooLarge),
+		errors.Is(err, ErrInvalidEnabled),
+		errors.Is(err, ErrInvalidIsActive):
 		web.Error(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrFlagNotFound),
 		errors.Is(err, ErrEnvironmentNotFound):

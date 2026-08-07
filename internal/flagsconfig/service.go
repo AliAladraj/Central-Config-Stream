@@ -3,6 +3,7 @@ package flagsconfig
 import (
 	"context"
 	"log/slog"
+	"unicode/utf8"
 
 	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
 	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
@@ -41,6 +42,17 @@ func (s *Service) UpdateFlagValue(ctx context.Context, req FlagValue) (*FlagValu
 		return nil, ErrInvalidFlagID
 	}
 
+	// The same checks a create runs. The update addresses its row by id and
+	// rewrites only VALUE and ENABLED, so the referential checks do not apply
+	// here — but these two do, and without them a value only an update let
+	// through is published to the whole environment exactly as a created one is.
+	if err := checkValue(req.Value); err != nil {
+		return nil, err
+	}
+	if !validFlagState(req.Enabled) {
+		return nil, ErrInvalidEnabled
+	}
+
 	// 1. The database is the source of truth. The repository hands back the flag key
 	//    alongside the row, so publishing needs no extra query.
 	updated, flagKey, err := s.repo.UpdateFlagValue(ctx, req)
@@ -69,6 +81,9 @@ func (s *Service) ListFlagValues(ctx context.Context, filter FlagValueFilter) ([
 func (s *Service) CreateFlag(ctx context.Context, req Flag) (*Flag, error) {
 	if !validFlagKey(req.FlagKey) {
 		return nil, ErrInvalidFlagKey
+	}
+	if !validFlagState(req.IsActive) {
+		return nil, ErrInvalidIsActive
 	}
 
 	// A flag on its own has no per-environment value yet, so there is nothing to
@@ -101,6 +116,12 @@ func (s *Service) CreateFlagValue(ctx context.Context, req FlagValue) (*FlagValu
 	}
 	if req.EnvironmentID <= 0 {
 		return nil, ErrInvalidEnvironmentID
+	}
+	if err := checkValue(req.Value); err != nil {
+		return nil, err
+	}
+	if !validFlagState(req.Enabled) {
+		return nil, ErrInvalidEnabled
 	}
 
 	// 1. The database is the source of truth.
@@ -168,6 +189,39 @@ func normalizePage(p Page) Page {
 
 // maxListLimit caps a single page of list results.
 const maxListLimit = 500
+
+// checkValue bounds what may be written to VALUE. The ceiling here is the
+// column rather than messaging.MaxValueSize, the way microconfig and
+// localization check theirs: those carry a TEXT document whose only limit is
+// what a KV value may hold, while VARCHAR(4000) is three orders of magnitude
+// tighter, so the database is what a caller hits first. Left to the column an
+// oversized value comes back as SQLSTATE 22001 — a driver error writeErr can
+// only call a 500, for what is plainly the caller's input.
+//
+// Length is counted in runes because VARCHAR(4000) counts characters, not
+// bytes: len() would refuse a value of 4000 accented characters the column
+// would have taken.
+func checkValue(value string) error {
+	if value == "" {
+		return ErrInvalidFlagValue
+	}
+	if utf8.RuneCountInString(value) > maxFlagValueLen {
+		return ErrFlagValueTooLarge
+	}
+	return nil
+}
+
+// maxFlagValueLen matches VARCHAR(4000) in migrations/005. If that column is
+// ever widened, widen this with it — the two are a pair, and this one being the
+// smaller is what keeps the failure a 400.
+const maxFlagValueLen = 4000
+
+// validFlagState bounds the int-shaped booleans, CONFIG_FLAG_VALUE.ENABLED and
+// CONFIG_FLAG.IS_ACTIVE. See ErrInvalidEnabled for why only 0 and 1 mean
+// anything, given that the column would take any SMALLINT.
+func validFlagState(n int64) bool {
+	return n == 0 || n == 1
+}
 
 // validFlagKey accepts only what a KV key may contain, minus the dot: the FLAGS
 // key is "{environmentID}.{flagKey}", so a dot inside the key would make it

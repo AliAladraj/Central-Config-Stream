@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
 )
 
 type Repository interface {

@@ -50,7 +50,7 @@ GOLANGCI_LINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GO
 #
 # They stay recursively expanded (`?=` and `=`, never `:=`) so git and date run
 # only for the targets that use them, not on every `make help`.
-MODULE := github.com/ErasedKyte/Central-Config-Stream
+MODULE := github.com/AliAladraj/Central-Config-Stream
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)

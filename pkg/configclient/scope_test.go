@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
-	"github.com/ErasedKyte/Central-Config-Stream/pkg/configclient"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/pkg/configclient"
 
 	natsserver "github.com/nats-io/nats-server/v2/test"
 )

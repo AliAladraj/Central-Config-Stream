@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 )
 
 // The handler is wired onto the same SQLite-backed service the service tests

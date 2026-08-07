@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/flagsconfig"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/messaging"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/messaging"
 )
 
 // rejectingPublisher refuses one key and accepts the rest, standing in for the

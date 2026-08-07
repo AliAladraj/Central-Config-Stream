@@ -26,9 +26,9 @@ COPY . .
 # the package that both binaries print from. Set here rather than in the two
 # stages below so the flags cannot drift between the service and the console.
 ENV LDFLAGS="-s -w \
-  -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Version=${VERSION} \
-  -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Commit=${COMMIT} \
-  -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Date=${DATE}"
+  -X github.com/AliAladraj/Central-Config-Stream/internal/buildinfo.Version=${VERSION} \
+  -X github.com/AliAladraj/Central-Config-Stream/internal/buildinfo.Commit=${COMMIT} \
+  -X github.com/AliAladraj/Central-Config-Stream/internal/buildinfo.Date=${DATE}"
 
 # ---- one compile per stage, so each target builds only what it ships ----
 # These were both RUN lines in `build` above, which meant the release image
@@ -72,7 +72,7 @@ COPY --from=ui /web /app/web
 ARG VERSION=dev
 ARG COMMIT=none
 LABEL org.opencontainers.image.title="testconsole" \
-      org.opencontainers.image.source="https://github.com/ErasedKyte/Central-Config-Stream" \
+      org.opencontainers.image.source="https://github.com/AliAladraj/Central-Config-Stream" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="MIT"
@@ -91,7 +91,7 @@ COPY --from=build-service --chown=nonroot:nonroot /out/data /data
 ARG VERSION=dev
 ARG COMMIT=none
 LABEL org.opencontainers.image.title="central-config" \
-      org.opencontainers.image.source="https://github.com/ErasedKyte/Central-Config-Stream" \
+      org.opencontainers.image.source="https://github.com/AliAladraj/Central-Config-Stream" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="MIT"

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 )
 
 // recLog is the reconciler's logger. The sweep can touch thousands of keys, so

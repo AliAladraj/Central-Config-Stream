@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
 )
 
 func okHandler(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }

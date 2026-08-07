@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/pkg/configclient"
+	"github.com/AliAladraj/Central-Config-Stream/pkg/configclient"
 )
 
 // ExampleNew shows the path a consuming service takes: warm the cache once at

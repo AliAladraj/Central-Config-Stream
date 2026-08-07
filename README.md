@@ -2,8 +2,8 @@
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Go 1.26](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
-[![pkg.go.dev](https://pkg.go.dev/badge/github.com/ErasedKyte/Central-Config-Stream/pkg/configclient.svg)](https://pkg.go.dev/github.com/ErasedKyte/Central-Config-Stream/pkg/configclient)
-[![CI](https://github.com/ErasedKyte/Central-Config-Stream/actions/workflows/ci.yml/badge.svg)](https://github.com/ErasedKyte/Central-Config-Stream/actions/workflows/ci.yml)
+[![pkg.go.dev](https://pkg.go.dev/badge/github.com/AliAladraj/Central-Config-Stream/pkg/configclient.svg)](https://pkg.go.dev/github.com/AliAladraj/Central-Config-Stream/pkg/configclient)
+[![CI](https://github.com/AliAladraj/Central-Config-Stream/actions/workflows/ci.yml/badge.svg)](https://github.com/AliAladraj/Central-Config-Stream/actions/workflows/ci.yml)
 
 A control plane for microservice configuration: feature flags, per-service
 appsettings, and localization bundles for a fleet of services.
@@ -128,7 +128,7 @@ cut:
 
 ```bash
 # from source — the module path carries the repository name, the binary does not
-go install github.com/ErasedKyte/Central-Config-Stream/cmd/central-config@latest
+go install github.com/AliAladraj/Central-Config-Stream/cmd/central-config@latest
 
 # or from a checkout
 go build ./cmd/central-config && ./central-config --version
@@ -141,7 +141,7 @@ stamps the real values.
 
 Once the first tag exists, [`.github/workflows/release.yml`](.github/workflows/release.yml)
 publishes a distroless, non-root image for linux/amd64 and linux/arm64 to
-`ghcr.io/erasedkyte/central-config` and cross-compiled `.tar.gz` binaries with a
+`ghcr.io/alialadraj/central-config` and cross-compiled `.tar.gz` binaries with a
 `checksums.txt` to the releases page, both stamped with a real version, because
 the pipeline passes the `-ldflags` a laptop build does not.
 [`docs/RELEASING.md`](docs/RELEASING.md) is the other side of this: how a tag is

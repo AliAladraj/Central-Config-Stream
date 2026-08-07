@@ -13,7 +13,7 @@ body:
       value: |
         If what you want is a fourth configuration domain alongside flags, appsettings and
         localization, read
-        [Adding a config domain](https://github.com/ErasedKyte/Central-Config-Stream/blob/HEAD/CONTRIBUTING.md#adding-a-config-domain)
+        [Adding a config domain](https://github.com/AliAladraj/Central-Config-Stream/blob/HEAD/CONTRIBUTING.md#adding-a-config-domain)
         first. It is around 45 sites in 13 files, half of which fail silently at runtime. That size
         is not a discouragement — it is the honest argument for or against, and it is worth having
         in front of you while you write the proposal.

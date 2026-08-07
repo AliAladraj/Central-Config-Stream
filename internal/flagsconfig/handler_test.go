@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/database"
+	"github.com/AliAladraj/Central-Config-Stream/internal/database"
 )
 
 // The handler is wired onto a SQLite-backed service rather than onto a stub:

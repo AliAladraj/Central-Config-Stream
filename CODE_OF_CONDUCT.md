@@ -70,7 +70,7 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement through GitHub's
 private vulnerability reporting, from the *Security* tab of
-[the repository](https://github.com/ErasedKyte/Central-Config-Stream/security),
+[the repository](https://github.com/AliAladraj/Central-Config-Stream/security),
 via *Report a vulnerability*. It is the private channel
 [`SECURITY.md`](SECURITY.md) describes, and it is used for conduct reports as
 well as for vulnerabilities. Do not open a public issue.

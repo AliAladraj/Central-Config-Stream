@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go/jetstream"

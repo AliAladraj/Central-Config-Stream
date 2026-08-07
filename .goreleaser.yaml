@@ -48,9 +48,9 @@ builds:
     # panic still carries function names and line numbers.
     ldflags: &ldflags
       - -s -w
-      - -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Version={{ .Summary }}
-      - -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Commit={{ .ShortCommit }}
-      - -X github.com/ErasedKyte/Central-Config-Stream/internal/buildinfo.Date={{ .Date }}
+      - -X github.com/AliAladraj/Central-Config-Stream/internal/buildinfo.Version={{ .Summary }}
+      - -X github.com/AliAladraj/Central-Config-Stream/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/AliAladraj/Central-Config-Stream/internal/buildinfo.Date={{ .Date }}
 
   - id: testconsole
     main: ./cmd/testconsole
@@ -101,7 +101,7 @@ checksum:
 # CHANGELOG.md stays the single answer to "what changed" either way.
 release:
   github:
-    owner: ErasedKyte
+    owner: AliAladraj
     name: Central-Config-Stream
   # `auto` reads the tag: v0.2.0-rc.1 is marked a pre-release, v0.2.0 is not.
   # That is also what decides whether the container image gets the `latest` tag

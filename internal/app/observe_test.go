@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/obs"
+	"github.com/AliAladraj/Central-Config-Stream/internal/obs"
 )
 
 // serveObserved runs one request through the access-log middleware with logging

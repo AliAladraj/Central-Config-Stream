@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/app"
+	"github.com/AliAladraj/Central-Config-Stream/internal/app"
 )
 
 // The rest of this suite drives the repositories. This file drives the whole

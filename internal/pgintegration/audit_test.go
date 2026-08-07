@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/audit"
+	"github.com/AliAladraj/Central-Config-Stream/internal/audit"
 )
 
 // auditBase is the instant the fixtures hang off. Microsecond precision because

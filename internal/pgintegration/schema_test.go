@@ -5,8 +5,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/ErasedKyte/Central-Config-Stream/internal/flagsconfig"
-	"github.com/ErasedKyte/Central-Config-Stream/internal/microconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/flagsconfig"
+	"github.com/AliAladraj/Central-Config-Stream/internal/microconfig"
 )
 
 // The migrations are applied by every test in this package, so a file that no

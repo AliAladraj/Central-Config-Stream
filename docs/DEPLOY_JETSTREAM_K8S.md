@@ -238,7 +238,7 @@ both are checked.
 Apply the Deployment + Service ([`deploy/k8s/central-config.yaml`](../deploy/k8s/central-config.yaml)).
 
 **Set `image:` first.** The manifest names
-`ghcr.io/erasedkyte/central-config:latest`, and **no image has been published
+`ghcr.io/alialadraj/central-config:latest`, and **no image has been published
 yet** — nothing is tagged, so there is no release and no GHCR package (see
 [`docs/RELEASING.md`](RELEASING.md)). Applied as shipped, the pod sits in
 `ImagePullBackOff`. Point it at an image you built and pushed yourself, or at a

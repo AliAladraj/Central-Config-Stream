@@ -121,13 +121,39 @@ needs no Docker at all.
 
 ### Install
 
-**Nothing is tagged yet.** There are no releases and no published image, so the
-source paths below are the only ones that work today — a `ghcr.io` pull or a
-release-page download 404s, and will keep doing so until the first `v*` tag is
-cut:
+Two paths need no Go toolchain. A distroless, non-root image is published to
+`ghcr.io/alialadraj/central-config`:
 
 ```bash
-# from source — the module path carries the repository name, the binary does not
+docker pull ghcr.io/alialadraj/central-config:0.1.1   # `latest` resolves to the same digest
+```
+
+It is linux/amd64 and linux/arm64 under one manifest list, so a pull picks the
+right architecture without the caller naming a platform.
+
+The other path is the
+[releases page](https://github.com/AliAladraj/Central-Config-Stream/releases/latest),
+which carries a `.tar.gz` per binary per platform — `central-config` and
+`testconsole`, each for linux and darwin on amd64 and arm64 — beside a single
+`checksums.txt` covering all eight:
+
+```bash
+V=0.1.1   # the version on the releases page, without the leading v
+BASE=https://github.com/AliAladraj/Central-Config-Stream/releases/download/v$V
+curl -sLO "$BASE/central-config_${V}_linux_amd64.tar.gz"   # or darwin_arm64, darwin_amd64, linux_arm64
+curl -sLO "$BASE/checksums.txt"
+sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c
+tar -xzf "central-config_${V}_linux_amd64.tar.gz"
+```
+
+`--ignore-missing` is the part that makes that one line rather than three:
+`checksums.txt` lists all eight archives and you downloaded one, so a bare
+`sha256sum -c` would fail on the seven that are not on disk.
+
+From source, when you want the tree rather than a published artefact:
+
+```bash
+# the module path carries the repository name, the binary does not
 go install github.com/AliAladraj/Central-Config-Stream/cmd/central-config@latest
 
 # or from a checkout
@@ -137,17 +163,14 @@ go build ./cmd/central-config && ./central-config --version
 Either way the binary honestly says `dev (commit none, built unknown)`: neither
 `go install` nor a plain `go build` passes `-ldflags`, so nothing is stamped in.
 Use it for a quick look, not for telling two deployments apart — `make build`
-stamps the real values.
-
-Once the first tag exists, [`.github/workflows/release.yml`](.github/workflows/release.yml)
-publishes a distroless, non-root image for linux/amd64 and linux/arm64 to
-`ghcr.io/alialadraj/central-config` and cross-compiled `.tar.gz` binaries with a
-`checksums.txt` to the releases page, both stamped with a real version, because
-the pipeline passes the `-ldflags` a laptop build does not.
+stamps the real values, and so does everything published above. A binary
+unpacked from a release archive prints its tag, short commit and build time,
+because [`.github/workflows/release.yml`](.github/workflows/release.yml) passes
+the `-ldflags` a laptop build does not.
 [`docs/RELEASING.md`](docs/RELEASING.md) is the other side of this: how a tag is
 cut and how to check one landed.
 
-**That image will be the service alone; it serves no browser UI.** The console
+**The image is the service alone; it serves no browser UI.** The console
 is a separate binary, and its React bundle is not in the archives — `web/` is
 gitignored and building it needs Node — so an unpacked `testconsole` answers
 `/api/state` and `/api/events` but tells the browser the UI has not been built.

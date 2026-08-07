@@ -140,7 +140,38 @@ having failed. Check that before debugging anything else.
 
 ---
 
-## 5. When a release is wrong
+## 5. After the tag lands
+
+The workflow publishes artefacts; it does not edit prose. Three places in the
+repository make claims that only a tag can settle, and every one of them is
+still wrong the moment §4 says the release is real:
+
+- **[`README.md`](../README.md) § *Install*** — whether a `ghcr.io` pull and a
+  release-page download work at all, and therefore whether the from-source
+  paths are the only ones on offer.
+- **[`SECURITY.md`](../SECURITY.md) § *Supported versions*** — what the
+  supported line is. Before a release it can only be `main`; after one it is
+  the latest release plus `main`, which is a different answer to the only
+  question that section is asked.
+- **[`CHANGELOG.md`](../CHANGELOG.md)'s link definitions** — the `[Unreleased]`
+  compare has to move to the tag just cut, and the released section needs its
+  own line: a `compare/v0.1.0...v0.1.1` for a patch, a
+  `releases/tag/v0.1.0` for the first one. Any caveat above them about the URLs
+  not resolving yet goes with them.
+
+Open that as a pull request off `main` in the same sitting as the tag. It cannot
+be done before, because until the tag exists the old text is the true text.
+
+This is a numbered step rather than a footnote because both of the first two
+shipped stale through v0.1.0 *and* v0.1.1, still announcing that nothing was
+tagged and that a pull 404s, and it was an external reader who noticed rather
+than anything in this process. A claim about whether a release exists is
+precisely the claim that cutting a release invalidates, and nothing else here
+reads those files.
+
+---
+
+## 6. When a release is wrong
 
 A version number is cheap and a moving one is not. Deleting the GitHub release
 and the tag is easy; retracting the image is not — GHCR keeps the digest,

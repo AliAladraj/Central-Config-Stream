@@ -1,0 +1,2 @@
+[ 7318250ms] [ERROR] Failed to load resource: net::ERR_NETWORK_IO_SUSPENDED @ http://localhost:8090/api/events:0
+[15658304ms] [ERROR] Failed to load resource: net::ERR_NETWORK_IO_SUSPENDED @ http://localhost:8090/api/events:0

@@ -242,7 +242,7 @@ Apply the Deployment + Service ([`deploy/k8s/central-config.yaml`](../deploy/k8s
 public and pulls anonymously, and one manifest list covers linux/amd64 and
 linux/arm64, so a node gets its own architecture without being told which.
 Applied as shipped the pod therefore comes up — and that is the reason to change
-it rather than a reason not to. Pin the version you tested (`:0.1.1`, or the
+it rather than a reason not to. Pin the version you tested (`:0.2.0`, or the
 digest it resolves to) instead of `latest`, so a rollout is a decision rather
 than whatever the registry last answered.
 [`docs/RELEASING.md`](RELEASING.md) lists the tags each release publishes.

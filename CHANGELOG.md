@@ -408,6 +408,7 @@ a cost and a fix.
   `HTTPFallback.FlagValueIDs` has to name the row ids by hand. Closing this is a
   change to `pkg/configclient/httpfallback.go`, not a new server route.
 
-[Unreleased]: https://github.com/AliAladraj/Central-Config-Stream/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/AliAladraj/Central-Config-Stream/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/AliAladraj/Central-Config-Stream/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/AliAladraj/Central-Config-Stream/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AliAladraj/Central-Config-Stream/releases/tag/v0.1.0

@@ -105,7 +105,7 @@ including a two-terminal setup that needs no Docker.
 
 ```bash
 # container image (linux/amd64 + arm64), service only — no browser UI inside
-docker pull ghcr.io/alialadraj/central-config:0.1.1   # :latest also works
+docker pull ghcr.io/alialadraj/central-config:0.2.0   # :latest also works
 
 # prebuilt binaries — see the releases page for darwin/linux tarballs
 # checksums.txt covers all eight archives, so check just the one you grabbed:

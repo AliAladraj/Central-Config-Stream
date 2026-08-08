@@ -28,7 +28,7 @@ linker's stamp alone, before any configuration is read and before the database
 or NATS is dialled — so it works on a machine with neither:
 
 ```
-central-config v0.1.1 (commit a5ce601, built 2026-08-07T13:38:49Z)
+central-config v0.2.0 (commit cc74244, built 2026-08-07T22:01:56Z)
 ```
 
 That line is the whole answer for anything off a release. **A build that says

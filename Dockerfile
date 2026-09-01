@@ -4,7 +4,7 @@
 # telling the compiler which target to emit rather than by emulating that
 # architecture — the alternative, running an arm64 toolchain under QEMU, turns a
 # ten-second compile into minutes for no benefit.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 
 # cache deps
